@@ -596,12 +596,12 @@ def map_node__to_unit(iodb,entities,parameters):
     iodb["relationships"].append(["unit__from_node", [unitname, nodename]])
 
     try:# may be easier when using the parameter functions
-        nodenameplus = iodb.pop("unit__node__node__"*unitname)
+        nodenameplus = iodb.pop("unit__node__node__"+unitname)
         threewayrelation = [unitname, nodenameplus, nodename]
         iodb["relationships"].append(["unit__node__node",threewayrelation])
         iodb["relationship_parameter_values"].append(["unit__node__node",threewayrelation,"fix_ratio_out_in_unit_flow",unitparameters["efficiency"],"Base"])
     except:
-        iodb["unit__node__node__"*unitname] = nodename
+        iodb["unit__node__node__"+unitname] = nodename
     
     return
 
@@ -631,12 +631,12 @@ def map_unit__to_node(iodb,entities,parameters):
     iodb["relationship_parameter_values"].append(["unit__to_node",entities,"unit_capacity",unitnodeparameters["capacity_per_unit"],"Base"])
 
     try:# may be easier when using the parameter functions
-        nodenameplus = iodb.pop("unit__node__node__"*unitname)
+        nodenameplus = iodb.pop("unit__node__node__"+unitname)
         threewayrelation = [unitname, nodename, nodenameplus]
         iodb["relationships"].append(["unit__node__node",threewayrelation])
         iodb["relationship_parameter_values"].append(["unit__node__node",threewayrelation,"fix_ratio_out_in_unit_flow",unitparameters["efficiency"],"Base"])
     except:
-        iodb["unit__node__node__"*unitname] = nodename
+        iodb["unit__node__node__"+unitname] = nodename
     
     return
 
