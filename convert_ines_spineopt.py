@@ -535,7 +535,7 @@ def map_preprocess(iodb):
 
     spineopttemplate = spineopt_template()
 	
-    iodb = iodb | spineopttemplate
+    iodb = iodb.update(spineopttemplate)
 	
 
 	# The template functionality of SpineOpt should be updated with a model template and a system template,
@@ -550,20 +550,20 @@ def map_constraint(iodb,entities,parameters):
     return
 
 def map_link(iodb,entities,parameters):
-    entityname = entities[1]
+    entityname = entities[0]
     iodb["objects"].append(["connection", entityname, None])
     return
 
 def map_node(iodb,entities,parameters):
-    entityname = entities[1]
-    parameter = parameters[1]
+    entityname = entities[0]
+    parameter = parameters[0]
     iodb["objects"].append(["node",entityname,None])
     balancetype = "balance_type_none"
     if parameter["node_type"] == "balance":
         balancetype = "balance_type_node"
     iodb["object_parameter_values"].append(["node", entityname, "balance_type", balancetype, "Base"])
-    if parameter["demand_profile"] != None:
-        iodb["object_parameter_values"].append(["node",entityname,"demand",parameter["demand_profile"],"Base"])
+    if parameter["flow_profile"] != None:
+        iodb["object_parameter_values"].append(["node",entityname,"demand",parameter["flow_profile"],"Base"])
     return
 
 def map_period(iodb,entities,parameters):
@@ -585,14 +585,14 @@ def map_tool(iodb,entities,parameters):
     return
 
 def map_unit(iodb,entities,parameters):
-    entityname = entities[1]
+    entityname = entities[0]
     iodb["objects"].append(["unit",entityname,None])
     return
 
 def map_node__to_unit(iodb,entities,parameters):
-    nodename = entities[2]
-    unitname = entities[3]
-    unitparameters = parameters[2]
+    nodename = entities[1]
+    unitname = entities[2]
+    unitparameters = parameters[1]
     iodb["relationships"].append(["unit__from_node", [unitname, nodename]])
 
     try:# may be easier when using the parameter functions
@@ -621,10 +621,10 @@ def map_tool_set(iodb,entities,parameters):
     return
 
 def map_unit__to_node(iodb,entities,parameters):
-    unitname = entities[2]
-    nodename = entities[3]
-    unitnodeparameters = parameters[1]
-    unitparameters = parameters[2]
+    unitname = entities[1]
+    nodename = entities[2]
+    unitnodeparameters = parameters[0]
+    unitparameters = parameters[1]
     iodb["relationships"].append(["unit__to_node", [unitname, nodename]])
 
     iodb["relationship_parameter_values"].append(["unit__to_node",entities,"vom_cost",unitnodeparameters["other_operational_cost"],"Base"])
@@ -641,10 +641,10 @@ def map_unit__to_node(iodb,entities,parameters):
     return
 
 def map_node__link__node(iodb,entities,parameters):
-    nodename = entities[2]
-    linkname = entities[3]
-    nodenameplus = entities[4]
-    linkparameters = parameters[3]
+    nodename = entities[1]
+    linkname = entities[2]
+    nodenameplus = entities[3]
+    linkparameters = parameters[2]
 
     threewayrelation = [nodename, linkname, nodenameplus]
     iodb["relationships"].append(["connection__node__node", threewayrelation])
