@@ -1,23 +1,13 @@
 import SpineOpt
-import SpineInterface
 import JSON
 
 path = @__DIR__
 input = ARGS[1]#joinpath(path, "input_spineopt.json")#
 output = ARGS[2]#joinpath(path, "output_spineopt.json")#
 
-inputdata = open(input, "r") do f
-	dicttxt = read(f,String) # file information to string
-	return JSON.parse(dicttxt) # parse and transform data
-end
-#input data needs to be converted to Symbols instead of strings in a lot of places
+input_data = JSON.parsefile(input)
 
-db_url = "sqlite://"
-SpineInterface.close_connection(db_url)
-SpineInterface.open_connection(db_url)
-SpineInterface.import_data(db_url, inputdata, "")
-
-m = SpineOpt.run_spineopt(db_url)
+m = SpineOpt.run_spineopt(input_data)
 
 #=
 m = run_spineopt(
