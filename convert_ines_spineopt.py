@@ -628,7 +628,7 @@ def map_unit__to_node(iodb,entities,parameters):
     iodb["relationships"].append(["unit__to_node", [unitname, nodename]])
 
     iodb["relationship_parameter_values"].append(["unit__to_node",entities,"vom_cost",unitnodeparameters["other_operational_cost"],"Base"])
-    iodb["relationship_parameter_values"].append(["unit__to_node",entities,"unit_capacity",unitnodeparameters["capacity_per_unit"],"Base"])
+    iodb["relationship_parameter_values"].append(["unit__to_node",entities,"unit_capacity",unitnodeparameters["capacity"],"Base"])
 
     try:# may be easier when using the parameter functions
         nodenameplus = iodb.pop("unit__node__node__"+unitname)
