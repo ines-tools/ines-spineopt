@@ -7,7 +7,7 @@ output = ARGS[2]#joinpath(path, "output_spineopt.json")#
 
 input_data = JSON.parsefile(input)
 
-m = SpineOpt.run_spineopt(input_data)
+m = SpineOpt.run_spineopt(input_data, nothing)
 
 #=
 m = run_spineopt(
