@@ -34,6 +34,7 @@ m = run_spineopt(
 
 #SpineOpt.write_model_file(m; file_name=output)
 outputdata = Dict(
+    "tool" => "SpineOpt",
     "time" => t1-t0,
     "objective" => SpineOpt.objective_value(m)
 )
