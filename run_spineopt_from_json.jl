@@ -7,7 +7,9 @@ output = ARGS[2]#joinpath(path, "output_spineopt.json")#
 
 input_data = JSON.parsefile(input)
 
+t0 = time()
 m = SpineOpt.run_spineopt(input_data, nothing)
+t1 = time()
 
 #=
 m = run_spineopt(
@@ -30,6 +32,11 @@ m = run_spineopt(
 )
 =#
 
+#SpineOpt.write_model_file(m; file_name=output)
+outputdata = Dict(
+    "time" => t1-t0,
+    "objective" => SpineOpt.objective_value(m)
+)
 open(output, "w") do f
-    JSON.print(f, m, 4)
+    JSON.print(f, outputdata, 4)
 end
