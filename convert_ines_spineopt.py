@@ -646,7 +646,7 @@ def map_node__link__node(iodb,entities,parameters):
     nodenameplus = entities[3]
     linkparameters = parameters[2]
 
-    threewayrelation = [nodename, linkname, nodenameplus]
+    threewayrelation = [linkname, nodename, nodenameplus]
     iodb["relationships"].append(["connection__node__node", threewayrelation])
     iodb["relationship_parameter_values"].append(["connection__node__node",threewayrelation,"connection_capacity",linkparameters["capacity"],"Base"])
     iodb["relationship_parameter_values"].append(["connection__node__node",threewayrelation,"fix_ratio_out_in_connection_flow",linkparameters["efficiency"],"Base"])
