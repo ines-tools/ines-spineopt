@@ -99,7 +99,7 @@ def spineopt_template():
 			["node", "storages_invested_mga_weight", 1, None, "Used to scale mga variables. For weighted-sum mga method, the length of this weight given as an Array will determine the number of iterations."],
 			["output", "is_active", True, "boolean_value_list", "If False, the object is excluded from the model if the tool filter object activity control is specified"],
 			["output", "output_resolution", None, None, "Temporal resolution of the output variables associated with this `output`."], ["report", "is_active", True, "boolean_value_list", "If False, the object is excluded from the model if the tool filter object activity control is specified"],
-			["report", "output_db_url", None, None, "Database url for SpineOpt output."], ["settings", "version", 10, None, "Current version of the SpineOpt data structure. Modify it at your own risk (but please don't)."],
+			["report", "output_db_url", None, None, "Database url for SpineOpt output."], ["settings", "version", 11, None, "Current version of the SpineOpt data structure. Modify it at your own risk (but please don't)."],
 			["stochastic_scenario", "is_active", True, "boolean_value_list", "If False, the object is excluded from the model if the tool filter object activity control is specified"],
 			["stochastic_structure", "is_active", True, "boolean_value_list", "If False, the object is excluded from the model if the tool filter object activity control is specified"],
 			["temporal_block", "block_end", None, None, "The end time for the `temporal_block`. Can be given either as a `DateTime` for a static end point, or as a `Duration` for an end point relative to the start of the current optimization."],
@@ -114,9 +114,11 @@ def spineopt_template():
 			["unit", "fix_units_invested", None, None, "Fix the value of the `units_invested` variable."],
 			["unit", "fix_units_invested_available", None, None, "Fix the value of the `units_invested_available` variable"],
 			["unit", "fix_units_on", None, None, "Fix the value of the `units_on` variable."],
+            ["unit", "fix_units_out_of_service", None, None, "Fix the value of the `units_out_of_service` variable."],
 			["unit", "initial_units_invested", None, None, "Initialize the value of the `units_invested` variable."],
 			["unit", "initial_units_invested_available", None, None, "Initialize the value of the `units_invested_available` variable"],
 			["unit", "initial_units_on", None, None, "Initialize the value of the `units_on` variable."],
+            ["unit", "initial_units_out_of_service", None, None, "Initialize the value of the `units_out_of_service` variable."],
 			["unit", "fom_cost", None, None, "Fixed operation and maintenance costs of a `unit`. Essentially, a cost coefficient on the existing units (incl. `number_of_units` and `units_invested_available`) and `unit_capacity` parameters. E.g. EUR/MWh"],
 			["unit", "graph_view_position", None, None, "An optional setting for tweaking the position of the different elements when drawing them via Spine Toolbox Graph View."],
 			["unit", "is_active", True, "boolean_value_list", "If False, the object is excluded from the model if the tool filter object activity control is specified"],
@@ -137,6 +139,9 @@ def spineopt_template():
 			["unit", "units_invested_mga", False, "boolean_value_list", "Defines whether a certain variable (here: units_invested) will be considered in the maximal-differences of the mga objective"],
 			["unit", "units_invested_mga_weight", 1, None, "Used to scale mga variables. For weightd sum mga method, the length of this weight given as an Array will determine the number of iterations."],
 			["unit", "is_renewable", False, "boolean_value_list", "Whether the unit is renewable - used in the minimum renewable generation constraint within the Benders master problem"],
+            ["unit", "scheduled_outage_duration", None, None, "Specifies the amount of time a unit must be out of service for maintenance as a single block over the course of the optimisation window"],
+			["unit", "outage_variable_type", "unit_online_variable_type_none", "unit_online_variable_type_list", "Determines whether the outage variable is integer or continuous or none(no optimisation of maintenance outages)."],
+			["unit", "units_unavailable", 0, None, "Represents the number of units out of service"],
 			["user_constraint", "constraint_sense", "==", "constraint_sense_list", "A selector for the sense of the `user_constraint`."],
 			["user_constraint", "is_active", True, "boolean_value_list", "If False, the object is excluded from the model if the tool filter object activity control is specified"],
 			["user_constraint", "right_hand_side", 0.0, None, "The right-hand side, constant term in a `user_constraint`. Can be time-dependent and used e.g. for complicated efficiency approximations."],
@@ -529,13 +534,36 @@ def spineopt_template():
 	}
     return spineopttemplate
 
+def spineopt_basic_model():
+    spineoptbasicmodel = {   
+		"objects": [
+			["model", "simple", None],
+			["report", "report1", None],
+			["stochastic_scenario", "realization", None],
+			["stochastic_structure", "deterministic", None],
+			["temporal_block", "flat", None]
+		],
+		"relationships": [
+			["model__default_stochastic_structure", ["simple", "deterministic"]],
+			["model__default_temporal_block", ["simple", "flat"]],
+			["model__report", ["simple", "report1"]],
+			["stochastic_structure__stochastic_scenario", ["deterministic", "realization"]]
+		],
+		"object_parameter_values": [
+			["temporal_block", "flat", "resolution", {"data": "1h", "type": "duration"}, "Base"]
+		]   
+	}
+    return spineoptbasicmodel
+
 def map_preprocess(iodb):
 	# Load SpineOpt template
     print("Load SpineOpt template")
 
     spineopttemplate = spineopt_template()
+    spineoptbasicmodel = spineopt_basic_model()
 	
-    iodb = iodb.update(spineopttemplate)
+    iodb.update(spineopttemplate)
+    iodb.update(spineoptbasicmodel)
 	
 
 	# The template functionality of SpineOpt should be updated with a model template and a system template,
