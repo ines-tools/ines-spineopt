@@ -1,4 +1,5 @@
 import SpineOpt
+import JuMP
 import JSON
 
 path = @__DIR__
@@ -36,7 +37,9 @@ m = run_spineopt(
 outputdata = Dict(
     "tool" => "SpineOpt",
     "time" => t1-t0,
-    "objective" => SpineOpt.objective_value(m)
+    "objective" => SpineOpt.objective_value(m),
+    "#variables" => JuMP.num_variables(m),
+    "#constraints" => JuMP.num_constraints(m; count_variable_in_set_constraints = false)
 )
 open(output, "w") do f
     JSON.print(f, outputdata, 4)
