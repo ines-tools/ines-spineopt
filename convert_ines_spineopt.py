@@ -620,7 +620,7 @@ def map_unit(iodb,entities,parameters):
 def map_node__to_unit(iodb,entities,parameters):
     nodename = entities[1]
     unitname = entities[2]
-    unitparameters = parameters[1]
+    unitparameters = parameters[2]
     iodb["relationships"].append(["unit__from_node", [unitname, nodename]])
 
     try:# may be easier when using the parameter functions
