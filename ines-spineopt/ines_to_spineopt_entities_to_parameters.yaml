@@ -1,0 +1,4 @@
+# source entity_class:
+#   target_entity_class:
+#     target_parameter: ["entity_name", target_parameter_type]
+#                       ["new_value", target_parameter_value]

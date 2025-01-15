@@ -1,2 +1,39 @@
-node:
-  node: {}
+node: 
+  node:
+    flow_profile: demand
+    storages_existing: initial_storages_invested_available
+    storage_capacity: node_state_cap
+    storage_fixed_cost: storage_fom_cost
+    storage_investment_cost: storage_investment_cost
+    storage_lifetime: lifetime
+    commodity_price: tax_out_unit_flow
+unit:
+  unit:
+    lifetime: lifetime
+    units_existing: initial_units_invested_available
+node__to_unit:
+  unit__from_node:
+    capacity: [unit_capacity,1.0,[[2],[1]]]
+    other_operational_cost: [vom_cost,1.0,[[2],[1]]]
+unit__to_node:
+  unit__to_node:
+    capacity: unit_capacity
+    other_operational_cost: [vom_cost,1.0,[[1],[2]]]
+  unit:
+    fixed_cost: [fom_cost,1.0,[[1]]]
+    investment_cost: [unit_investment_cost,1.0,[[1]]]
+    profile_limit_upper: [unit_availability_factor, 1.0,[[1]]]
+unit_flow__unit_flow:
+  unit__node__node:
+    equality_ratio: [fix_ratio_out_in_unit_flow, 1.0, [[1], [2], [3]]]
+link:
+  connection:
+    investment_cost: connection_investment_cost
+    links_max_cumulative: candidate_connections
+    links_existing: initial_connections_invested_available
+node__link__node:
+  connection__from_node:
+    operational_cost: [connection_flow_cost,1.0,[[2], [1]]]
+    capacity: [connection_capacity,1.0,[[2], [1]]]
+  connection__node__node:
+    efficiency: [fix_ratio_out_in_connection_flow,1.0,[[2], [3], [1]]]
