@@ -1,4 +1,6 @@
 
+period: model
+temporality: temporal_block
 node: node
 link: connection
 unit: unit

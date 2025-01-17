@@ -1,5 +1,0 @@
-default_parameters:
-  unit:
-    unit_investment_variable_type: unit_investment_variable_type_continuous
-  connection:
-    connection_investment_variable_type: unit_investment_variable_type_continuous

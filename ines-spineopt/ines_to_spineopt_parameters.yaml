@@ -3,7 +3,7 @@ node:
     flow_profile: demand
     storages_existing: initial_storages_invested_available
     storage_capacity: node_state_cap
-    storage_fixed_cost: storage_fom_cost
+    storage_fixed_cost: [storage_fom_cost,0.000114155,[[1]]]
     storage_investment_cost: storage_investment_cost
     storage_lifetime: lifetime
     commodity_price: tax_out_unit_flow
@@ -20,9 +20,8 @@ unit__to_node:
     capacity: unit_capacity
     other_operational_cost: [vom_cost,1.0,[[1],[2]]]
   unit:
-    fixed_cost: [fom_cost,1.0,[[1]]]
+    fixed_cost: [fom_cost,0.000114155,[[1]]]
     investment_cost: [unit_investment_cost,1.0,[[1]]]
-    profile_limit_upper: [unit_availability_factor, 1.0,[[1]]]
 unit_flow__unit_flow:
   unit__node__node:
     equality_ratio: [fix_ratio_out_in_unit_flow, 1.0, [[1], [2], [3]]]
