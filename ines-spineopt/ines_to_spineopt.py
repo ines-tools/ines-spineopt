@@ -93,7 +93,7 @@ def main():
             add_entity(target_db,"stochastic_structure",("deterministic",))
             target_db.commit_session("Added stochastic structure")
 
-            map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["additional_mapping"])
+            map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["map_of_historical_ts_to_scenario_ts"])
 
 def process_emissions(source_db, target_db):
 

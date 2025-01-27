@@ -4,6 +4,6 @@ default_parameters:
   connection:
     connection_investment_variable_type: unit_investment_variable_type_continuous
 
-additional_mapping:
+map_of_historical_ts_to_scenario_ts:
   profile_limit_upper:
     unit__to_node: [unit,unit_availability_factor, 1.0,[[1]]]
