@@ -20,6 +20,14 @@ def nested_index_names(value, names = None, depth = 0):
             nested_index_names(y, names, depth + 1)
     return names
 
+operations = {
+    "multiply": lambda x, y: x * y,
+    "add": lambda x, y: x + y,
+    "subtract": lambda x, y: x - y,
+    "divide": lambda x, y: x / y,
+    "constant": lambda x, y: y
+}
+
 if len(sys.argv) > 1:
     url_db_in = sys.argv[1]
 else:
@@ -89,11 +97,10 @@ def main():
             # Process emisssions balance equations
             process_emissions(source_db,target_db)
 
-            # Process scenario realizations
-            add_entity(target_db,"stochastic_structure",("deterministic",))
-            target_db.commit_session("Added stochastic structure")
-
+            # Manual functions
             map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["map_of_historical_ts_to_scenario_ts"])
+            map_of_periods_to_ts(source_db,target_db,settings["map_of_periods_to_ts"])
+            timeline_setup(source_db,target_db)
 
 def process_emissions(source_db, target_db):
 
@@ -135,6 +142,10 @@ def process_emissions(source_db, target_db):
 
 def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
     
+    duration   = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])["data"]
+    starttime  = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "start_time")[0]["value"])["data"]
+    resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
+                
     for source_param in settings:
         for source_entity_class in settings[source_param]:
             for param_map in [i for i in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param) if i["type"] == "map"]:
@@ -146,30 +157,135 @@ def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
                 data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
                 data.index = data.index.astype("string")
 
-                duration  = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])["data"]
-                starttime = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "start_time")[0]["value"])["data"]
-                resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
                 if any(i in data.index for i in starttime):
                     map_export = {"type": "map","index_type": "str", "data":{}}
                     for index, element in enumerate(starttime):
-
                         try:
-                            add_entity(target_db,"stochastic_scenario",(f"realization_{index+1}",))
-                            add_entity(target_db,"stochastic_structure__stochastic_scenario",("deterministic",f"realization_{index+1}"))
+                            alternative_name = f"wy{str(pd.Timestamp(element).year)}"
+                            add_alternative(target_db,alternative_name)
+                            #add_entity(target_db,"stochastic_scenario",(f"wy{str(pd.Timestamp(element).year)}",))
+                            #add_entity(target_db,"stochastic_structure__stochastic_scenario",("deterministic",f"wy{str(pd.Timestamp(element).year)}"))
                         except:
                             pass
-                        steps = pd.to_timedelta(duration[index]) / pd.to_timedelta(resolution)
-                        df_data = data.iloc[data.index.tolist().index(element):data.index.tolist().index(element)+int(steps),data.columns.tolist().index("value")].tolist()
-                        map_export["data"][f"realization_{index+1}"] = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
-                    param_list = settings[source_param][source_entity_class]
-                    target_entity_class = param_list[0]
-                    target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in param_list[3]])
-                    add_parameter_value(target_db,target_entity_class,param_list[1],"Base",target_names,map_export)
+                        param_list = settings[source_param][source_entity_class]
+                        target_entity_class = param_list[0]
+                        steps = pd.to_timedelta(duration) / pd.to_timedelta(resolution)
+                        df_data = (float(param_list[2])*data.iloc[data.index.tolist().index(element):data.index.tolist().index(element)+int(steps),data.columns.tolist().index("value")]).tolist()
+                        # map_export["data"][f"realization_{index+1}"] = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
+                        ts_export = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
+                        target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in param_list[3]])
+                        add_parameter_value(target_db,target_entity_class,param_list[1],alternative_name,target_names,ts_export)
 
     try:
-        target_db.commit_session("Added map timeseries")
+        target_db.commit_session("Added historical timeseries error")
     except DBAPIError as e:
-        print("commit process capacities error")
+        print("commit process historical timeseries error")
 
+def map_of_periods_to_ts(source_db,target_db,settings):
+    
+    starttime = {} 
+    year_repr = {} 
+    for period in json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "period")[0]["value"])["data"]:
+        starttime[period] = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "start_time")["value"])["data"]
+        year_repr[period] = source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "years_represented")["parsed_value"]
+                    
+    for source_entity_class in settings:
+        for target_entity_class in settings[source_entity_class]:
+            for source_param in settings[source_entity_class][target_entity_class]:
+                print(source_entity_class,target_entity_class,source_param)
+                param_elements = settings[source_entity_class][target_entity_class][source_param]
+
+                if isinstance(param_elements,list):
+                    target_param = param_elements[0]
+                    multiplier = float(param_elements[1])
+                    target_order = param_elements[2]
+                elif isinstance(param_elements,dict):
+                    target_param = param_elements["target"][0]
+                    target_order = param_elements["target"][2]
+                    op = operations[param_elements["operation"]]
+                    multiplier = op(float(param_elements["target"][1]),float(param_elements["with"]))
+
+                for param_map in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param):
+
+                    if param_map["type"] == "map":
+
+                        map_table = convert_map_to_table(param_map["parsed_value"])
+                        index_names = nested_index_names(param_map["parsed_value"])
+                        data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+                        data.index = data.index.astype("string")
+
+                        indexes_ = []
+                        values_ = []
+                        for period_, ts_index_ in starttime.items():
+                            values_.append(multiplier*(float(data.at[period_,"value"]) if period_ in data.index else 0.0))
+                            values_.append(values_[-1])
+                            # this should be removed once the fixed resolution is repaired
+                            indexes_.append(ts_index_)
+                            indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))-pd.Timedelta("1h")).isoformat())
+
+                        ts_to_export = {"type": "time_series","data": dict(zip(indexes_,values_)),}
+                        target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
+                        add_parameter_value(target_db,target_entity_class,target_param,"Base",target_names,ts_to_export)
+                    
+                    elif param_map["type"] == "float":
+                        target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
+                        add_parameter_value(target_db,target_entity_class,target_param,"Base",target_names,multiplier*param_map["parsed_value"])
+          
+    try:
+        target_db.commit_session("Added map of periods to timeseries")
+    except DBAPIError as e:
+        print("commit map of periods to timeseries error")
+
+def timeline_setup(source_db,target_db):
+
+    # model_data
+    model_name = source_db.get_entity_items(entity_class_name = "solve_pattern")[0]["name"]
+    # Process scenario realizations
+    sto_structure = "deterministic"
+    sto_scenario  = "realization"
+    add_entity(target_db,"stochastic_structure",(sto_structure,))
+    add_entity(target_db,"model__default_stochastic_structure",(model_name,sto_structure))
+    add_entity(target_db,"model__default_investment_stochastic_structure",(model_name,sto_structure))
+    add_entity(target_db,"stochastic_scenario",(sto_scenario,))
+    add_entity(target_db,"stochastic_structure__stochastic_scenario",(sto_structure,sto_scenario))
+    
+    periods = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "period")[0]["value"])["data"]
+    resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
+    
+    # historical data
+    duration = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])["data"]
+
+    # if not multiyear
+    if len(periods) == 1:
+        print("it is not a multiyear invesment problem")
+        # model horizon
+        for period in periods:
+            py_start = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "start_time", alternative_name = "Base", entity_byname = (period,))["value"])["data"]
+            print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0))
+            extra_duration = pd.Timedelta("1D") if pd.Timestamp(py_start).year % 4 == 0 else pd.Timedelta("0h")
+            py_end = (pd.Timestamp(py_start) + pd.Timedelta(duration) + extra_duration).isoformat()
+            add_parameter_value(target_db,"model","model_start","Base",(model_name,),{"type":"date_time","data":py_start})
+            add_parameter_value(target_db,"model","model_end","Base",(model_name,),{"type":"date_time","data":py_end})
+
+        # operational_resolution
+        temporal_block_name = "operations"
+        add_entity(target_db,"temporal_block",(temporal_block_name,))
+        add_entity(target_db,"model__default_temporal_block",(model_name,temporal_block_name))
+        add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":resolution})
+
+        # investment_resolution
+        temporal_block_name = "planning"
+        add_entity(target_db,"temporal_block",(temporal_block_name,))
+        add_entity(target_db,"model__default_investment_temporal_block",(model_name,temporal_block_name))
+        add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":duration})
+        
+    try:
+        target_db.commit_session("Added timeline")
+    except DBAPIError as e:
+        print("commit timeline error")
+
+# investment_costs_annualized
+# default_parameters_model     
+        
 if __name__ == "__main__":
     main()

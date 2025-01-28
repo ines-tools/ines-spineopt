@@ -1,6 +1,4 @@
-
-period: model
-temporality: temporal_block
+solve_pattern: model
 node: node
 link: connection
 unit: unit
