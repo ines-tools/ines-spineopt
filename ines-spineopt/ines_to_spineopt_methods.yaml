@@ -5,6 +5,7 @@ node:
         balance_type: balance_type_none
       storage:
         storage_investment_variable_type: storage_investment_variable_type_continuous
+        has_state: True
     storage_investment_method:
       not_allowed: 
         candidate_storages: 0.0

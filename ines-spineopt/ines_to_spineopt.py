@@ -7,6 +7,7 @@ import sys
 from ines_tools import ines_transform
 import pandas as pd
 import json
+import numpy as np
 
 def nested_index_names(value, names = None, depth = 0):
     if names is None:
@@ -42,7 +43,7 @@ with open('ines_to_spineopt_entities.yaml', 'r') as file:
 with open('ines_to_spineopt_parameters.yaml', 'r') as file:
     parameter_transforms = yaml.load(file, yaml.BaseLoader)
 with open('ines_to_spineopt_methods.yaml', 'r') as file:
-    parameter_methods = yaml.load(file, yaml.BaseLoader)
+    parameter_methods = yaml.safe_load(file)
 with open('ines_to_spineopt_entities_to_parameters.yaml', 'r') as file:
     entities_to_parameters = yaml.load(file, yaml.BaseLoader)
 with open('settings.yaml', 'r') as file:
@@ -94,12 +95,16 @@ def main():
             ## Copy entities to parameters
             # target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
 
+            # Manual functions
+            ## historical time series to alternatives
+            map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["map_of_historical_ts_to_scenario_ts"])
+            ## future time series
+            map_of_periods_to_ts(source_db,target_db,settings["map_of_periods_to_ts"])
+            
             # Process emisssions balance equations
             process_emissions(source_db,target_db)
 
-            # Manual functions
-            map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["map_of_historical_ts_to_scenario_ts"])
-            map_of_periods_to_ts(source_db,target_db,settings["map_of_periods_to_ts"])
+            # timeline configuration for spineopt model
             timeline_setup(source_db,target_db)
 
 def process_emissions(source_db, target_db):
@@ -113,27 +118,22 @@ def process_emissions(source_db, target_db):
         unit_name, node_in = entity_byname
         # Connect the unit to the atmosphere
         add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
+        add_entity(target_db,"unit__node__node",(unit_name,"atmosphere",node_in))
 
         # Check carbon capture technology coupled
-        cc_capability = [element for element in target_db.get_entity_items(entity_class_name="unit__to_node") if "CO2" in element["entity_byname"][1] and unit_name == element["entity_byname"][0]]
+        cc_capability = [element for element in target_db.get_entity_items(entity_class_name="unit__node__node") if "CO2" in element["entity_byname"][1] and unit_name == element["entity_byname"][0]]
         if not cc_capability:
-            add_entity(target_db,"unit__node__node",(unit_name,"atmosphere",node_in))
             add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name,"atmosphere",node_in),co2_value[node_in])
         else:
-            # Build the equations for balancing emissions
-            add_entity(target_db,"user_constraint",(f"emissions_{unit_name}",))
-            # Connect the user_constraints with the unit_flows
-            add_entity(target_db,"unit__to_node__user_constraint",(unit_name,"atmosphere",f"emissions_{unit_name}"))
-            add_entity(target_db,"unit__from_node__user_constraint",(unit_name,node_in,f"emissions_{unit_name}"))
-            # Add the unit_flow coefficients in this expression
-            add_parameter_value(target_db,"unit__to_node__user_constraint","unit_flow_coefficient","Base",(unit_name,"atmosphere",f"emissions_{unit_name}"),1.0)
-            add_parameter_value(target_db,"unit__from_node__user_constraint","unit_flow_coefficient","Base",(unit_name,node_in,f"emissions_{unit_name}"),-co2_value[node_in])
-        
-            unit_name, node_out = cc_capability[0]["entity_byname"]
-            # Connect the user_constraints with the unit_flows
-            add_entity(target_db,"unit__to_node__user_constraint",(unit_name,node_out,f"emissions_{unit_name}"))
-            # Add the unit_flow coefficients in this expression
-            add_parameter_value(target_db,"unit__to_node__user_constraint","unit_flow_coefficient","Base",(unit_name,node_out,f"emissions_{unit_name}"),1.0)
+            co2_captured = target_db.get_parameter_value_item(entity_class_name="unit__node__node",parameter_definition_name="fix_ratio_out_in_unit_flow",entity_byname=cc_capability[0]["entity_byname"],alternative_name="Base")
+            if co2_captured["type"] == "time_series":
+                param_value = json.loads(co2_captured["value"].decode("utf-8"))["data"]
+                keys = list(param_value.keys())
+                vals = co2_value[node_in] - np.fromiter(param_value.values(), dtype=float)
+                p_emissions = {"type":"time_series","data":dict(zip(keys,vals))}
+            elif co2_captured["type"] == "float":
+                p_emissions = co2_value[node_in] - co2_captured["parsed_value"]
+            add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name,"atmosphere",node_in),p_emissions)
 
     try:
         target_db.commit_session("Added process capacities")
