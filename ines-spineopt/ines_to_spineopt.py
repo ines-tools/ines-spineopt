@@ -65,6 +65,30 @@ def add_alternative(db_map : DatabaseMapping,name_alternative : str) -> None:
     if error is not None:
         raise RuntimeError(error)
 
+def parameter_features(param_elements,source_db,source_entity_class,source_entity_names,source_alternative):
+
+    if isinstance(param_elements,list):
+        target_param = param_elements[0]
+        multiplier = float(param_elements[1])
+        target_order = param_elements[2]
+    elif isinstance(param_elements,dict):
+        target_param = param_elements["target"][0]
+        conver_factor = float(param_elements["target"][1])
+        target_order = param_elements["target"][2]
+        op = operations[param_elements["operation"]]
+        try:
+            with_value = float(param_elements["with"])
+        except:
+            print("operating with ",param_elements["with"])
+            value_ = source_db.get_parameter_value_item(entity_class_name = source_entity_class, parameter_definition_name = param_elements["with"], entity_byname = source_entity_names, alternative_name = source_alternative)
+            if value_:
+                with_value = value_["parsed_value"]
+            else:
+                raise ValueError(f"{param_elements['with']} does not exist for {source_entity_class} {source_entity_names}")
+        multiplier = conver_factor*op(float(param_elements["target"][1]),with_value)
+
+    return target_param, target_order, multiplier
+
 def main():
     with DatabaseMapping(url_db_in) as source_db:
         with DatabaseMapping(url_db_out) as target_db:
@@ -100,7 +124,9 @@ def main():
             map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["map_of_historical_ts_to_scenario_ts"])
             ## future time series
             map_of_periods_to_ts(source_db,target_db,settings["map_of_periods_to_ts"])
-            
+            ## investments not allowed
+            limiting_investments_notallowed(source_db,target_db)
+
             # Process emisssions balance equations
             process_emissions(source_db,target_db)
 
@@ -142,40 +168,46 @@ def process_emissions(source_db, target_db):
 
 def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
     
-    duration   = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])["data"]
+    duration   = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
     starttime  = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "start_time")[0]["value"])["data"]
     resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
                 
-    for source_param in settings:
-        for source_entity_class in settings[source_param]:
-            for param_map in [i for i in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param) if i["type"] == "map"]:
+    for source_entity_class in settings:
+        for target_entity_class in settings[source_entity_class]:
+            for source_param in settings[source_entity_class][target_entity_class]:
+                print(source_entity_class,target_entity_class,source_param)
+                param_elements = settings[source_entity_class][target_entity_class][source_param]
 
-                index_names = nested_index_names(param_map["parsed_value"])
+                for param_map in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param):
 
-                map_table = convert_map_to_table(param_map["parsed_value"])
-                index_names = nested_index_names(param_map["parsed_value"])
-                data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
-                data.index = data.index.astype("string")
+                    target_param, target_order, multiplier = parameter_features(param_elements,source_db,source_entity_class,param_map["entity_byname"],param_map["alternative_name"])
 
-                if any(i in data.index for i in starttime):
-                    map_export = {"type": "map","index_type": "str", "data":{}}
-                    for index, element in enumerate(starttime):
-                        try:
-                            alternative_name = f"wy{str(pd.Timestamp(element).year)}"
-                            add_alternative(target_db,alternative_name)
-                            #add_entity(target_db,"stochastic_scenario",(f"wy{str(pd.Timestamp(element).year)}",))
-                            #add_entity(target_db,"stochastic_structure__stochastic_scenario",("deterministic",f"wy{str(pd.Timestamp(element).year)}"))
-                        except:
-                            pass
-                        param_list = settings[source_param][source_entity_class]
-                        target_entity_class = param_list[0]
-                        steps = pd.to_timedelta(duration) / pd.to_timedelta(resolution)
-                        df_data = (float(param_list[2])*data.iloc[data.index.tolist().index(element):data.index.tolist().index(element)+int(steps),data.columns.tolist().index("value")]).tolist()
-                        # map_export["data"][f"realization_{index+1}"] = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
-                        ts_export = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
-                        target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in param_list[3]])
-                        add_parameter_value(target_db,target_entity_class,param_list[1],alternative_name,target_names,ts_export)
+                    if param_map["type"] == "map":
+                        index_names = nested_index_names(param_map["parsed_value"])
 
+                        map_table = convert_map_to_table(param_map["parsed_value"])
+                        index_names = nested_index_names(param_map["parsed_value"])
+                        data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+                        data.index = data.index.astype("string")
+
+                        if any(i in data.index for i in starttime):
+                            map_export = {"type": "map","index_type": "str", "data":{}}
+                            for index, element in enumerate(starttime):
+                                try:
+                                    alternative_name = f"wy{str(pd.Timestamp(element).year)}"
+                                    add_alternative(target_db,alternative_name)
+                                except:
+                                    pass
+                                steps = pd.to_timedelta(duration) / pd.to_timedelta(resolution)
+                                df_data = (multiplier*data.iloc[data.index.tolist().index(element):data.index.tolist().index(element)+int(steps),data.columns.tolist().index("value")]).tolist()
+                                ts_export = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
+                                target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
+                                add_parameter_value(target_db,target_entity_class,target_param,alternative_name,target_names,ts_export)
+                    
+                    elif param_map["type"] == "float":
+                        target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
+                        add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,multiplier*param_map["parsed_value"])
+          
     try:
         target_db.commit_session("Added historical timeseries error")
     except DBAPIError as e:
@@ -195,17 +227,9 @@ def map_of_periods_to_ts(source_db,target_db,settings):
                 print(source_entity_class,target_entity_class,source_param)
                 param_elements = settings[source_entity_class][target_entity_class][source_param]
 
-                if isinstance(param_elements,list):
-                    target_param = param_elements[0]
-                    multiplier = float(param_elements[1])
-                    target_order = param_elements[2]
-                elif isinstance(param_elements,dict):
-                    target_param = param_elements["target"][0]
-                    target_order = param_elements["target"][2]
-                    op = operations[param_elements["operation"]]
-                    multiplier = op(float(param_elements["target"][1]),float(param_elements["with"]))
-
                 for param_map in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param):
+
+                    target_param, target_order, multiplier = parameter_features(param_elements,source_db,source_entity_class,param_map["entity_byname"],param_map["alternative_name"])
 
                     if param_map["type"] == "map":
 
@@ -229,8 +253,44 @@ def map_of_periods_to_ts(source_db,target_db,settings):
                     
                     elif param_map["type"] == "float":
                         target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
-                        add_parameter_value(target_db,target_entity_class,target_param,"Base",target_names,multiplier*param_map["parsed_value"])
+                        add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,multiplier*param_map["parsed_value"])
           
+    try:
+        target_db.commit_session("Added map of periods to timeseries")
+    except DBAPIError as e:
+        print("commit map of periods to timeseries error")
+
+def flow_or_state_profiled(source_db,target_db,settings):
+
+    for source_entity_class in settings:
+        for target_entity_class in settings[source_entity_class]:
+            for source_param in settings[source_entity_class][target_entity_class]:
+                print(source_entity_class,target_entity_class,source_param)
+                param_elements = settings[source_entity_class][target_entity_class][source_param]
+
+                if isinstance(param_elements,list):
+                    target_param = param_elements[0]
+                    multiplier = float(param_elements[1])
+                    target_order = param_elements[2]
+                elif isinstance(param_elements,dict):
+                    target_param = param_elements["target"][0]
+                    target_order = param_elements["target"][2]
+                    op = operations[param_elements["operation"]]
+                    multiplier = op(float(param_elements["target"][1]),float(param_elements["with"]))
+
+                for param_map in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param):
+
+                    if param_map["type"] == "map":
+
+                        index_names = nested_index_names(param_map["parsed_value"])
+
+                        map_table = convert_map_to_table(param_map["parsed_value"])
+                        index_names = nested_index_names(param_map["parsed_value"])
+                        data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+                        data.index = data.index.astype("string")
+
+                        capacity = source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = "capacity", entity_byname = param_map["entity_byname"], alternative = param_map["alternative_name"])
+
     try:
         target_db.commit_session("Added map of periods to timeseries")
     except DBAPIError as e:
@@ -253,7 +313,7 @@ def timeline_setup(source_db,target_db):
     resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
     
     # historical data
-    duration = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])["data"]
+    duration = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
 
     # if not multiyear
     if len(periods) == 1:
@@ -284,7 +344,36 @@ def timeline_setup(source_db,target_db):
     except DBAPIError as e:
         print("commit timeline error")
 
-# investment_costs_annualized
+def limiting_investments_notallowed(source_db,target_db):
+
+    candidates = {"unit":"units_existing","link":"links_existing","node":"storages_existing"}
+    target_class = {"unit":"unit","link":"connection","node":"node"}
+    target_param = {"unit":"candidate_units","link":"candidate_connections","node":"candidate_storages"}
+
+    for source_param in ["investment_method","storage_investment_method"]:
+        for param_map in [i for i in source_db.get_parameter_value_items(parameter_definition_name = source_param) if i["parsed_value"]=="not_allowed"]:
+            existing_ = source_db.get_parameter_value_item(entity_class_name = param_map["entity_class_name"], parameter_definition_name = candidates[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"], alternative_name = param_map["alternative_name"])
+            if existing_:
+
+                if existing_["type"] == "map":
+                    map_table = convert_map_to_table(existing_["parsed_value"])
+                    index_names = nested_index_names(existing_["parsed_value"])
+                    data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+                    data.index = data.index.astype("string")
+                    value_ = data["value"].tolist()[0]
+
+                elif existing_["type"] == "float":
+                    value_ = existing_["parsed_value"]
+
+                add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],param_map["alternative_name"],param_map["entity_byname"],value_)
+            else: 
+                print(f"There is no existing capacity in {param_map['entity_class_name']} {param_map['entity_byname']}")
+
+    try:
+        target_db.commit_session("Added map of periods to timeseries")
+    except DBAPIError as e:
+        print("commit map of periods to timeseries error")    
+
 # default_parameters_model     
         
 if __name__ == "__main__":

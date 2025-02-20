@@ -5,10 +5,21 @@ default_parameters:
     connection_investment_variable_type: unit_investment_variable_type_continuous
 
 map_of_historical_ts_to_scenario_ts:
-  profile_limit_upper:
-    unit__to_node: [unit,unit_availability_factor, 1.0,[[1]]]
-  flow_profile:
-    node: [node,demand, -1.0,[[1]]]
+  unit__to_node:
+    unit:
+      profile_limit_upper: [unit_availability_factor, 1.0,[[1]]]
+    unit__to_node:
+      profile_fix:  
+        target: [fix_unit_flow, 1.0,[[1],[2]]]
+        operation: multiply
+        with: capacity
+  node:
+    node:
+      flow_profile: [demand, -1.0,[[1]]]
+      storage_state_lower_limit:
+        target: [node_state_min, 1.0,[[1]]]
+        operation: multiply
+        with: storages_existing
 
 map_of_periods_to_ts:
   unit:

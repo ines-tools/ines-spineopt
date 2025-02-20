@@ -7,22 +7,16 @@ node:
         storage_investment_variable_type: storage_investment_variable_type_continuous
         has_state: True
     storage_investment_method:
-      not_allowed: 
-        candidate_storages: 0.0
       no_limits: 
         candidate_storages: 100000.0
 unit: 
   unit: 
     investment_method:
-      not_allowed: 
-        candidate_units: 0.0
       no_limits: 
         candidate_units: 100000.0
 link: 
   connection: 
     investment_method:
-      not_allowed: 
-        candidate_connections: 0.0
       no_limits: 
         candidate_connections: 100000.0
 
