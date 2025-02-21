@@ -49,6 +49,11 @@ with open('ines_to_spineopt_entities_to_parameters.yaml', 'r') as file:
 with open('settings.yaml', 'r') as file:
     settings = yaml.load(file, yaml.BaseLoader)
 
+def add_entity_group(db_map : DatabaseMapping, class_name : str, group : str, member : str, ent_description = None) -> None:
+    _, error = db_map.add_entity_group_item(group_name = group, member_name = member, entity_class_name=class_name, description = ent_description)
+    if error is not None:
+        raise RuntimeError(error)
+    
 def add_entity(db_map : DatabaseMapping, class_name : str, name : tuple, ent_description = None) -> None:
     _, error = db_map.add_entity_item(entity_byname=name, entity_class_name=class_name, description = ent_description)
     if error is not None:
@@ -133,33 +138,33 @@ def main():
             # timeline configuration for spineopt model
             timeline_setup(source_db,target_db)
 
+            # Fix boundary condition for storages
+            storage_state_fix_method(source_db,target_db)
+
 def process_emissions(source_db, target_db):
 
     # unit flow coming from fossil nodes
     co2_params = source_db.get_parameter_value_items(entity_class_name="node",parameter_definition_name="co2_content",alternative_name="Base")
-    co2_value  = {co2_param["entity_name"]:co2_param["parsed_value"] for co2_param in co2_params}
+    co2_value  = {co2_param["entity_name"]:co2_param["parsed_value"] for co2_param in co2_params if co2_param["entity_name"] != "CO2"}
 
-    for entity_items in [element for element in target_db.get_entity_items(entity_class_name="unit__from_node") if element["entity_byname"][1] in co2_value]:
+    for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
+        unit__from_nodes = [from_node for from_node in co2_value if target_db.get_entity_item(entity_class_name = "unit__from_node",entity_byname = (unit_entity["name"],from_node))]       
+        unit_name = unit_entity["name"]
+        if len(unit__from_nodes) > 0:
+            add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
+            add_entity(target_db,"user_constraint",(unit_name+"_emissions",))
+            add_entity(target_db,"unit__to_node__user_constraint",(unit_name,"atmosphere",unit_name+"_emissions"))
+            add_parameter_value(target_db,"unit__to_node__user_constraint","unit_flow_coefficient","Base",(unit_name,"atmosphere",unit_name+"_emissions"),-1.0)
+            for from_node in unit__from_nodes:
+                add_entity(target_db,"unit__to_node__user_constraint",(unit_name,from_node,unit_name+"_emissions"))
+                add_parameter_value(target_db,"unit__to_node__user_constraint","unit_flow_coefficient","Base",(unit_name,from_node,unit_name+"_emissions"),co2_value[from_node])
+            
+    for entity_items in [element for element in target_db.get_entity_items(entity_class_name="unit__to_node") if "CO2" in element["entity_byname"][1]]:
         entity_byname = entity_items["entity_byname"]
-        unit_name, node_in = entity_byname
-        # Connect the unit to the atmosphere
-        add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
-        add_entity(target_db,"unit__node__node",(unit_name,"atmosphere",node_in))
-
-        # Check carbon capture technology coupled
-        cc_capability = [element for element in target_db.get_entity_items(entity_class_name="unit__node__node") if "CO2" in element["entity_byname"][1] and unit_name == element["entity_byname"][0]]
-        if not cc_capability:
-            add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name,"atmosphere",node_in),co2_value[node_in])
-        else:
-            co2_captured = target_db.get_parameter_value_item(entity_class_name="unit__node__node",parameter_definition_name="fix_ratio_out_in_unit_flow",entity_byname=cc_capability[0]["entity_byname"],alternative_name="Base")
-            if co2_captured["type"] == "time_series":
-                param_value = json.loads(co2_captured["value"].decode("utf-8"))["data"]
-                keys = list(param_value.keys())
-                vals = co2_value[node_in] - np.fromiter(param_value.values(), dtype=float)
-                p_emissions = {"type":"time_series","data":dict(zip(keys,vals))}
-            elif co2_captured["type"] == "float":
-                p_emissions = co2_value[node_in] - co2_captured["parsed_value"]
-            add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name,"atmosphere",node_in),p_emissions)
+        unit_name, node_out = entity_byname
+        add_entity(target_db,"unit__from_node",(unit_name,"atmosphere"))
+        add_entity(target_db,"unit__node__node",(unit_name, node_out,"atmosphere"))
+        add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name, node_out,"atmosphere"),1.0)
 
     try:
         target_db.commit_session("Added process capacities")
@@ -247,7 +252,7 @@ def map_of_periods_to_ts(source_db,target_db,settings):
                             indexes_.append(ts_index_)
                             indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))-pd.Timedelta("1h")).isoformat())
 
-                        ts_to_export = {"type": "time_series","data": dict(zip(indexes_,values_)),}
+                        ts_to_export = {"type": "time_series","data": dict(zip(indexes_,values_))}
                         target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
                         add_parameter_value(target_db,target_entity_class,target_param,"Base",target_names,ts_to_export)
                     
@@ -327,32 +332,61 @@ def timeline_setup(source_db,target_db):
             add_parameter_value(target_db,"model","model_start","Base",(model_name,),{"type":"date_time","data":py_start})
             add_parameter_value(target_db,"model","model_end","Base",(model_name,),{"type":"date_time","data":py_end})
 
-        # operational_resolution
-        temporal_block_name = "operations"
-        add_entity(target_db,"temporal_block",(temporal_block_name,))
-        add_entity(target_db,"model__default_temporal_block",(model_name,temporal_block_name))
-        add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":resolution})
+    else:
+        print("Instead of multiyear invesmtents, alternatives per planning year")
+        # model horizon
+        for period in periods:
+            add_alternative(target_db,period)
+            py_start = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "start_time", alternative_name = "Base", entity_byname = (period,))["value"])["data"]
+            print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0))
+            py_end = (pd.Timestamp(py_start) + pd.Timedelta(duration)).isoformat()
+            add_parameter_value(target_db,"model","model_start",period,(model_name,),{"type":"date_time","data":py_start})
+            add_parameter_value(target_db,"model","model_end",period,(model_name,),{"type":"date_time","data":py_end})
 
-        # investment_resolution
-        temporal_block_name = "planning"
-        add_entity(target_db,"temporal_block",(temporal_block_name,))
-        add_entity(target_db,"model__default_investment_temporal_block",(model_name,temporal_block_name))
-        add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":duration})
-        
+    # operational_resolution
+    temporal_block_name = "operations"
+    add_entity(target_db,"temporal_block",(temporal_block_name,))
+    add_entity(target_db,"model__default_temporal_block",(model_name,temporal_block_name))
+    add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":resolution})
+
+    # investment_resolution
+    temporal_block_name = "planning"
+    add_entity(target_db,"temporal_block",(temporal_block_name,))
+    add_entity(target_db,"model__default_investment_temporal_block",(model_name,temporal_block_name))
+    add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":duration})
+
     try:
         target_db.commit_session("Added timeline")
     except DBAPIError as e:
         print("commit timeline error")
 
+def storage_state_fix_method(source_db,target_db):
+    
+    for storage_method in source_db.get_parameter_value_items(parameter_definition_name = "storage_state_fix_method"):
+        if storage_method["parsed_value"] == "fix_start":
+            value_ = source_db.get_parameter_value_item(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], alternative_name = storage_method["alternative_name"], parameter_definition_name = "storage_state_fix")
+            if value_:
+                if value_["type"] == "float":
+                    model_start = target_db.get_parameter_value_items(entity_class_name = "model", parameter_definition_name = "model_start")[0]
+                    value_start_ = (pd.Timestamp(model_start["parsed_value"].value) - pd.Timedelta("1h")).isoformat()
+                    value_ts_ = {"type":"time_series","data": [value_["parsed_value"]],"index": {"start": value_start_,"resolution": "1h","ignore_year": True}}
+                    add_parameter_value(target_db,"node","fix_node_state",value_["alternative_name"],value_["entity_byname"],value_ts_)
+            else:
+                print("WARNING: FIXED STATE DOES NOT EXIST ")
+    try:
+        target_db.commit_session("Added fixed storage state method")
+    except DBAPIError as e:
+        print("commit fixed storage state error")
+
 def limiting_investments_notallowed(source_db,target_db):
 
-    candidates = {"unit":"units_existing","link":"links_existing","node":"storages_existing"}
+    target_candi = {"unit":"units_existing","link":"links_existing","node":"storages_existing"}
     target_class = {"unit":"unit","link":"connection","node":"node"}
     target_param = {"unit":"candidate_units","link":"candidate_connections","node":"candidate_storages"}
 
     for source_param in ["investment_method","storage_investment_method"]:
         for param_map in [i for i in source_db.get_parameter_value_items(parameter_definition_name = source_param) if i["parsed_value"]=="not_allowed"]:
-            existing_ = source_db.get_parameter_value_item(entity_class_name = param_map["entity_class_name"], parameter_definition_name = candidates[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"], alternative_name = param_map["alternative_name"])
+            existing_ = source_db.get_parameter_value_item(entity_class_name = param_map["entity_class_name"], parameter_definition_name = target_candi[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"], alternative_name = param_map["alternative_name"])
             if existing_:
 
                 if existing_["type"] == "map":
@@ -370,9 +404,9 @@ def limiting_investments_notallowed(source_db,target_db):
                 print(f"There is no existing capacity in {param_map['entity_class_name']} {param_map['entity_byname']}")
 
     try:
-        target_db.commit_session("Added map of periods to timeseries")
+        target_db.commit_session("Added candadite assets")
     except DBAPIError as e:
-        print("commit map of periods to timeseries error")    
+        print("commit candadite assets error")    
 
 # default_parameters_model     
         

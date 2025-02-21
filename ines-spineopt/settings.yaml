@@ -19,7 +19,7 @@ map_of_historical_ts_to_scenario_ts:
       storage_state_lower_limit:
         target: [node_state_min, 1.0,[[1]]]
         operation: multiply
-        with: storages_existing
+        with: storage_capacity
 
 map_of_periods_to_ts:
   unit:
