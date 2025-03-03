@@ -61,17 +61,5 @@ map_of_periods_to_ts:
         with: 8760
       commodity_price: [tax_out_unit_flow,1.0,[[1]]]
 
-investments_annuity:
-  link:
-    connection:
-      investment_cost: [connection_investment_cost, 1.0,[[1]]] 
-  node:
-    node:
-      storage_investment_cost: [storage_investment_cost, 1.0,[[1]]]
-  unit__to_node:
-    unit:
-      investment_cost: [unit_investment_cost, 1.0,[[1]]]
-  node__to_unit:
-    unit:
-      investment_cost: [unit_investment_cost, 1.0,[[2]]]
+
   

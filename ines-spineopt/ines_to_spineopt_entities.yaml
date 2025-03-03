@@ -12,6 +12,3 @@ node__link__node:
   - connection__from_node: [[2], [1]]
   - connection__to_node: [[2], [3]]
   - connection__node__node: [[2], [3], [1]]
-set__unit:
-  - investment_group: [[1]]
-  - unit__investment_group: [[2], [1]]

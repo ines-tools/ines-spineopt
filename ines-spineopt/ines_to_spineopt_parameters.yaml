@@ -13,6 +13,3 @@ link:
 node__link__node:
   connection__from_node:
     capacity: [connection_capacity,1.0,[[2], [1]]]
-set:
-  investment_group:
-    invest_max_total: [maximum_entities_invested_available,1.0,[[1]]]

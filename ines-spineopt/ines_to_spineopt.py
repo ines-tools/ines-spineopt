@@ -141,6 +141,9 @@ def main():
             # Fix boundary condition for storages
             storage_state_fix_method(source_db,target_db)
 
+            # Set to group constraints
+            set_to_entities_and_parameters(source_db,target_db)
+
 def process_emissions(source_db, target_db):
 
     # unit flow coming from fossil nodes
@@ -407,6 +410,49 @@ def limiting_investments_notallowed(source_db,target_db):
         target_db.commit_session("Added candadite assets")
     except DBAPIError as e:
         print("commit candadite assets error")    
+
+def set_to_entities_and_parameters(source_db,target_db):
+
+    for source_parameter in ["invest_max_total","flow_max_cumulative"]:
+        for source_dict_parameter in source_db.get_parameter_value_items(entity_class_name = "set", parameter_definition_name = source_parameter):
+            source_relationships = {relation:element["entity_byname"] for relation in ["set__unit_flow","set__node","set__unit","set__link"] for element in source_db.get_entity_items(entity_class_name = relation) if element["entity_byname"][0] == source_dict_parameter["entity_byname"][0]}
+            if source_parameter == "invest_max_total":
+                try:
+                    add_entity(target_db,"investment_group",source_dict_parameter["entity_byname"])
+                    print("Entity already created","investment_group",source_dict_parameter["entity_byname"])
+                except:
+                    pass
+                add_parameter_value(target_db,"investment_group","maximum_entities_invested_available",source_dict_parameter["alternative_name"],source_dict_parameter["entity_byname"],source_dict_parameter["parsed_value"])
+                for entity_relation, names_relation in source_relationships.items():
+                    if entity_relation == "set__unit":
+                        entity_byname = (names_relation[1],names_relation[0])
+                        add_entity(target_db,"unit__investment_group",entity_byname)
+                    if entity_relation == "set__node":
+                        entity_byname = (names_relation[1],names_relation[0])
+                        add_entity(target_db,"node__investment_group",entity_byname)
+                    if entity_relation == "set__link":
+                        entity_byname = (names_relation[1],names_relation[0])
+                        add_entity(target_db,"connection__investment_group",entity_byname)
+
+            elif source_parameter == "flow_max_cumulative":
+                if len(source_relationships) == 1:
+                    for entity_relation, names_relation in source_relationships.items():
+                        if entity_relation == "set__unit_flow":
+                            source_flow = source_db.get_entity_items(entity_byname = names_relation[1:])[0]["entity_class_name"]
+                            target_entity_class = "unit__from_node" if source_flow == "node__to_unit" else "unit__to_node"
+                            target_entity_names = (names_relation[2],names_relation[1]) if source_flow == "node__to_unit" else (names_relation[1],names_relation[2])
+                            try:
+                                add_entity(target_db,target_entity_class,target_entity_names)
+                            except:
+                                pass
+                            add_parameter_value(target_db,target_entity_class,"max_total_cumulated_unit_flow_to_node",source_dict_parameter["alternative_name"],target_entity_names,source_dict_parameter["parsed_value"])
+                else:
+                    pass
+    try:
+        target_db.commit_session("Added set constraints")
+    except DBAPIError as e:
+        print("commit set constraints error")  
+
 
 # default_parameters_model     
         
