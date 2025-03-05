@@ -2,7 +2,10 @@ default_parameters:
   unit:
     unit_investment_variable_type: unit_investment_variable_type_continuous
   connection:
-    connection_investment_variable_type: unit_investment_variable_type_continuous
+    connection_investment_variable_type: connection_investment_variable_type_continuous
+  #model:
+  #  discount_rate: 0.05
+  #  use_economic_representation: True
 
 map_of_historical_ts_to_scenario_ts:
   unit__to_node:
@@ -22,11 +25,9 @@ map_of_historical_ts_to_scenario_ts:
         with: storage_capacity
 
 map_of_periods_to_ts:
-  unit:
-    unit:
-      units_existing: [initial_units_invested_available,1.0,[[1]]]
   unit__to_node:
     unit:
+      investment_cost: [unit_investment_cost, 1.0, [[1]]]
       fixed_cost: 
         target: [fom_cost, 1.0,[[1]]]
         operation: divide
@@ -46,7 +47,7 @@ map_of_periods_to_ts:
       equality_ratio: [fix_ratio_out_in_unit_flow, 1.0, [[1], [2], [3]]]
   link: 
     connection:
-      links_existing: [initial_connections_invested_available,1.0,[[1]]]
+      investment_cost: [connection_investment_cost,1.0,[[1]]]
   node__link__node: 
     connection__from_node:
       operational_cost: [connection_flow_cost, 1.0,[[2],[1]]]
@@ -54,7 +55,8 @@ map_of_periods_to_ts:
       efficiency: [fix_ratio_out_in_connection_flow,1.0,[[2], [3], [1]]]
   node:
     node:
-      storages_existing: [initial_storages_invested_available,1.0,[[1]]]
+      storage_capacity: [node_state_cap,1.0,[[1]]]
+      storage_investment_cost: [storage_investment_cost,1.0,[[1]]]
       storage_fixed_cost: 
         target: [storage_fom_cost, 1.0,[[1]]]
         operation: divide

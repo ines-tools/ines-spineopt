@@ -1,6 +1,9 @@
-node: 
+node:
   node:
-    storage_capacity: node_state_cap
+    storage_lifetime: storage_investment_econ_lifetime
+unit:
+  unit: 
+    lifetime: unit_investment_econ_lifetime
 node__to_unit:
   unit__from_node:
     capacity: [unit_capacity,1.0,[[2],[1]]]
@@ -9,6 +12,7 @@ unit__to_node:
     capacity: unit_capacity
 link:
   connection:
+    lifetime: connection_investment_econ_lifetime
     links_max_cumulative: candidate_connections
 node__link__node:
   connection__from_node:

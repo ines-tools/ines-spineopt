@@ -47,7 +47,7 @@ with open('ines_to_spineopt_methods.yaml', 'r') as file:
 with open('ines_to_spineopt_entities_to_parameters.yaml', 'r') as file:
     entities_to_parameters = yaml.load(file, yaml.BaseLoader)
 with open('settings.yaml', 'r') as file:
-    settings = yaml.load(file, yaml.BaseLoader)
+    settings = yaml.safe_load(file)
 
 def add_entity_group(db_map : DatabaseMapping, class_name : str, group : str, member : str, ent_description = None) -> None:
     _, error = db_map.add_entity_group_item(group_name = group, member_name = member, entity_class_name=class_name, description = ent_description)
@@ -67,6 +67,16 @@ def add_parameter_value(db_map : DatabaseMapping,class_name : str,parameter : st
 
 def add_alternative(db_map : DatabaseMapping,name_alternative : str) -> None:
     _, error = db_map.add_alternative_item(name=name_alternative)
+    if error is not None:
+        raise RuntimeError(error)
+    
+def add_scenario(db_map : DatabaseMapping,name_scenario : str) -> None:
+    _, error = db_map.add_scenario_item(name=name_scenario)
+    if error is not None:
+        raise RuntimeError(error)
+
+def add_scenario_alternative(db_map : DatabaseMapping,name_scenario : str, name_alternative : str, rank_int = None) -> None:
+    _, error = db_map.add_scenario_alternative_item(scenario_name = name_scenario, alternative_name = name_alternative, rank = rank_int)
     if error is not None:
         raise RuntimeError(error)
 
@@ -101,6 +111,7 @@ def main():
             target_db.purge_items('parameter_value')
             target_db.purge_items('entity')
             target_db.purge_items('alternative')
+            target_db.purge_items('scenario')
             target_db.refresh_session()
             target_db.commit_session("Purged stuff")
 
@@ -144,6 +155,20 @@ def main():
             # Set to group constraints
             set_to_entities_and_parameters(source_db,target_db)
 
+            # Default parameters
+            default_parameters(target_db,settings["default_parameters"])
+            candidates_to_number_of(target_db)
+
+            # existing capacity 
+            existing_capacity(source_db,target_db)
+
+            add_scenario(target_db,"wy1995_y2030")
+            add_scenario_alternative(target_db,"wy1995_y2030","Base",4)
+            add_scenario_alternative(target_db,"wy1995_y2030","medium_bio",3)
+            add_scenario_alternative(target_db,"wy1995_y2030","wy1995",2)
+            add_scenario_alternative(target_db,"wy1995_y2030","y2030",1)
+            target_db.commit_session("Added scenario")
+
 def process_emissions(source_db, target_db):
 
     # unit flow coming from fossil nodes
@@ -153,15 +178,19 @@ def process_emissions(source_db, target_db):
     for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
         unit__from_nodes = [from_node for from_node in co2_value if target_db.get_entity_item(entity_class_name = "unit__from_node",entity_byname = (unit_entity["name"],from_node))]       
         unit_name = unit_entity["name"]
-        if len(unit__from_nodes) > 0:
+        if len(unit__from_nodes) > 1:
             add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
             add_entity(target_db,"user_constraint",(unit_name+"_emissions",))
             add_entity(target_db,"unit__to_node__user_constraint",(unit_name,"atmosphere",unit_name+"_emissions"))
             add_parameter_value(target_db,"unit__to_node__user_constraint","unit_flow_coefficient","Base",(unit_name,"atmosphere",unit_name+"_emissions"),-1.0)
             for from_node in unit__from_nodes:
-                add_entity(target_db,"unit__to_node__user_constraint",(unit_name,from_node,unit_name+"_emissions"))
-                add_parameter_value(target_db,"unit__to_node__user_constraint","unit_flow_coefficient","Base",(unit_name,from_node,unit_name+"_emissions"),co2_value[from_node])
-            
+                add_entity(target_db,"unit__from_node__user_constraint",(unit_name,from_node,unit_name+"_emissions"))
+                add_parameter_value(target_db,"unit__from_node__user_constraint","unit_flow_coefficient","Base",(unit_name,from_node,unit_name+"_emissions"),co2_value[from_node])
+        elif len(unit__from_nodes) == 1:
+            add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
+            add_entity(target_db,"unit__node__node",(unit_name,"atmosphere",unit__from_nodes[0]))
+            add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name,"atmosphere",unit__from_nodes[0]),co2_value[unit__from_nodes[0]])
+
     for entity_items in [element for element in target_db.get_entity_items(entity_class_name="unit__to_node") if "CO2" in element["entity_byname"][1]]:
         entity_byname = entity_items["entity_byname"]
         unit_name, node_out = entity_byname
@@ -453,8 +482,45 @@ def set_to_entities_and_parameters(source_db,target_db):
     except DBAPIError as e:
         print("commit set constraints error")  
 
+def default_parameters(target_db,settings):
+    for target_entity_class in settings:
+        for entity_item in target_db.get_entity_items(entity_class_name = target_entity_class):
+            for target_parameter in settings[target_entity_class]:
+                add_parameter_value(target_db,target_entity_class,target_parameter,"Base",entity_item["entity_byname"],settings[target_entity_class][target_parameter])
+    try:
+        target_db.commit_session("Added default_parameters")
+    except DBAPIError as e:
+        print("commit default_parameters error")  
 
-# default_parameters_model     
-        
+def candidates_to_number_of(target_db):
+    parameter_conversion = {"candidate_units":"number_of_units","candidate_connections":"number_of_connections","candidate_storages":"number_of_storages"}
+    for parameter_name in parameter_conversion:
+        for param_map in target_db.get_parameter_value_items(parameter_definition_name = parameter_name):
+            add_parameter_value(target_db,param_map["entity_class_name"],parameter_conversion[parameter_name],param_map["alternative_name"],param_map["entity_byname"],0.0)
+
+    try:
+        target_db.commit_session("Added candidate to number of")
+    except DBAPIError as e:
+        print("commit candidate to number of error")
+
+def existing_capacity(source_db,target_db):
+
+    entity_map = {"unit":"unit","node":"node","link":"connection"}
+    parameter_conversion = {"units_existing":"initial_units_invested_available","links_existing":"initial_connections_invested_available","storages_existing":"initial_storages_invested_available"}
+    for source_parameter in parameter_conversion:
+        target_parameter = parameter_conversion[source_parameter]
+        for param_map in source_db.get_parameter_value_items(parameter_definition_name = source_parameter):
+            param_dict = json.loads(param_map["value"].decode("utf-8"))
+            param_value = param_dict["data"]
+            target_entity = entity_map[param_map["entity_class_name"]]
+            for i, alternative in enumerate(list(param_value.keys())):
+                vals = np.fromiter(param_value.values(), dtype=float)
+                print("existing capacity", param_map["entity_byname"])
+                add_parameter_value(target_db,target_entity,target_parameter,alternative,param_map["entity_byname"],vals[i])
+    try:
+        target_db.commit_session("Added existing capacity")
+    except DBAPIError as e:
+        print("commit existing capacity error")
+
 if __name__ == "__main__":
     main()
