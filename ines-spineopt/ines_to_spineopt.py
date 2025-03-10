@@ -162,6 +162,9 @@ def main():
             # existing capacity 
             existing_capacity(source_db,target_db)
 
+            # lifetime to duration
+            lifetime_to_duration(source_db,target_db,settings["lifetime_to_duration"])
+
             add_scenario(target_db,"wy1995_y2030")
             add_scenario_alternative(target_db,"wy1995_y2030","Base",4)
             add_scenario_alternative(target_db,"wy1995_y2030","medium_bio",3)
@@ -521,6 +524,23 @@ def existing_capacity(source_db,target_db):
         target_db.commit_session("Added existing capacity")
     except DBAPIError as e:
         print("commit existing capacity error")
+
+def lifetime_to_duration(source_db,target_db,settings):
+
+    for source_class in settings:
+        for target_class in settings[source_class]:
+            for source_param in settings[source_class][target_class]:
+                for param_map in source_db.get_parameter_value_items(entity_class_name = source_class, parameter_definition_name = source_param):
+                    if param_map["type"] == "float":
+                        param_value = {"type":"duration","data":str(int(param_map["parsed_value"]))+"Y"}
+                    target_param = settings[source_class][target_class][source_param]
+                    print("lifetime", param_map["entity_byname"])
+                    add_parameter_value(target_db,target_class,target_param,param_map["alternative_name"],param_map["entity_byname"],param_value)
+                
+    try:
+        target_db.commit_session("Added lifetime conversion")
+    except DBAPIError as e:
+        print("commit lifetime conversion error")
 
 if __name__ == "__main__":
     main()

@@ -3,10 +3,10 @@ default_parameters:
     unit_investment_variable_type: unit_investment_variable_type_continuous
   connection:
     connection_investment_variable_type: connection_investment_variable_type_continuous
-  #model:
-  #  discount_rate: 0.05
-  #  use_economic_representation: True
-
+  model:
+    discount_rate: 0.05
+    use_economic_representation: True
+    
 map_of_historical_ts_to_scenario_ts:
   unit__to_node:
     unit:
@@ -63,5 +63,14 @@ map_of_periods_to_ts:
         with: 8760
       commodity_price: [tax_out_unit_flow,1.0,[[1]]]
 
-
-  
+lifetime_to_duration:
+  unit:
+    unit: 
+      lifetime: unit_investment_econ_lifetime
+  link:
+    connection:
+      lifetime: connection_investment_econ_lifetime
+  node:
+    node:
+      storage_lifetime: storage_investment_econ_lifetime
+    
