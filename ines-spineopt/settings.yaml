@@ -6,7 +6,7 @@ default_parameters:
   model:
     discount_rate: 0.05
     use_economic_representation: True
-    
+
 map_of_historical_ts_to_scenario_ts:
   unit__to_node:
     unit:
@@ -66,11 +66,17 @@ map_of_periods_to_ts:
 lifetime_to_duration:
   unit:
     unit: 
-      lifetime: unit_investment_econ_lifetime
+      lifetime: 
+        - unit_investment_econ_lifetime
+        - unit_investment_tech_lifetime
   link:
     connection:
-      lifetime: connection_investment_econ_lifetime
+      lifetime:
+        - connection_investment_econ_lifetime
+        - connection_investment_tech_lifetime
   node:
     node:
-      storage_lifetime: storage_investment_econ_lifetime
+      storage_lifetime: 
+        - storage_investment_econ_lifetime
+        - storage_investment_tech_lifetime
     

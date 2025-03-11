@@ -282,10 +282,11 @@ def map_of_periods_to_ts(source_db,target_db,settings):
                         values_ = []
                         for period_, ts_index_ in starttime.items():
                             values_.append(multiplier*(float(data.at[period_,"value"]) if period_ in data.index else 0.0))
-                            values_.append(values_[-1])
+                            
                             # this should be removed once the fixed resolution is repaired
                             indexes_.append(ts_index_)
-                            indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))-pd.Timedelta("1h")).isoformat())
+                        values_.append(values_[-1]) 
+                        indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
 
                         ts_to_export = {"type": "time_series","data": dict(zip(indexes_,values_))}
                         target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
@@ -376,6 +377,7 @@ def timeline_setup(source_db,target_db):
             print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0))
             py_end = (pd.Timestamp(py_start) + pd.Timedelta(duration)).isoformat()
             add_parameter_value(target_db,"model","model_start",period,(model_name,),{"type":"date_time","data":py_start})
+            add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
             add_parameter_value(target_db,"model","model_end",period,(model_name,),{"type":"date_time","data":py_end})
 
     # operational_resolution
@@ -533,9 +535,10 @@ def lifetime_to_duration(source_db,target_db,settings):
                 for param_map in source_db.get_parameter_value_items(entity_class_name = source_class, parameter_definition_name = source_param):
                     if param_map["type"] == "float":
                         param_value = {"type":"duration","data":str(int(param_map["parsed_value"]))+"Y"}
-                    target_param = settings[source_class][target_class][source_param]
-                    print("lifetime", param_map["entity_byname"])
-                    add_parameter_value(target_db,target_class,target_param,param_map["alternative_name"],param_map["entity_byname"],param_value)
+                    
+                    for target_param in settings[source_class][target_class][source_param]:
+                        print(target_param, param_map["entity_byname"])
+                        add_parameter_value(target_db,target_class,target_param,param_map["alternative_name"],param_map["entity_byname"],param_value)
                 
     try:
         target_db.commit_session("Added lifetime conversion")
