@@ -164,7 +164,7 @@ def main():
 
             # lifetime to duration
             lifetime_to_duration(source_db,target_db,settings["lifetime_to_duration"])
-
+            
             add_scenario(target_db,"wy1995_y2030")
             add_scenario_alternative(target_db,"wy1995_y2030","Base",4)
             add_scenario_alternative(target_db,"wy1995_y2030","medium_bio",3)
@@ -447,6 +447,9 @@ def limiting_investments_notallowed(source_db,target_db):
 
 def set_to_entities_and_parameters(source_db,target_db):
 
+    model_duration = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
+    resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
+    
     for source_parameter in ["invest_max_total","flow_max_cumulative"]:
         for source_dict_parameter in source_db.get_parameter_value_items(entity_class_name = "set", parameter_definition_name = source_parameter):
             source_relationships = {relation:element["entity_byname"] for relation in ["set__unit_flow","set__node","set__unit","set__link"] for element in source_db.get_entity_items(entity_class_name = relation) if element["entity_byname"][0] == source_dict_parameter["entity_byname"][0]}
@@ -479,7 +482,9 @@ def set_to_entities_and_parameters(source_db,target_db):
                                 add_entity(target_db,target_entity_class,target_entity_names)
                             except:
                                 pass
-                            add_parameter_value(target_db,target_entity_class,"max_total_cumulated_unit_flow_to_node",source_dict_parameter["alternative_name"],target_entity_names,source_dict_parameter["parsed_value"])
+                            model_duration_hours = pd.Timedelta(model_duration) / pd.Timedelta(resolution)
+                            param_value = model_duration_hours * source_dict_parameter["parsed_value"]
+                            add_parameter_value(target_db,target_entity_class,"max_total_cumulated_unit_flow_to_node",source_dict_parameter["alternative_name"],target_entity_names,param_value)
                 else:
                     pass
     try:
