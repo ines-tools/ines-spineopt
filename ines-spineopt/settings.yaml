@@ -5,7 +5,7 @@ default_parameters:
     connection_investment_variable_type: connection_investment_variable_type_continuous
   model:
     discount_rate: 0.05
-    use_economic_representation: True
+    # use_economic_representation: True
 
 map_of_historical_ts_to_scenario_ts:
   unit__to_node:
@@ -34,6 +34,7 @@ map_of_periods_to_ts:
         with: 8760.0
     unit__to_node:
       other_operational_cost: [vom_cost, 1.0,[[1],[2]]]
+      capacity: [unit_capacity, 1.0,[[1],[2]]]
   node__to_unit:
     unit:
       fixed_cost: 

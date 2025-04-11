@@ -164,13 +164,7 @@ def main():
 
             # lifetime to duration
             lifetime_to_duration(source_db,target_db,settings["lifetime_to_duration"])
-            
-            add_scenario(target_db,"wy1995_y2030")
-            add_scenario_alternative(target_db,"wy1995_y2030","Base",4)
-            add_scenario_alternative(target_db,"wy1995_y2030","medium_bio",3)
-            add_scenario_alternative(target_db,"wy1995_y2030","wy1995",2)
-            add_scenario_alternative(target_db,"wy1995_y2030","y2030",1)
-            target_db.commit_session("Added scenario")
+        
 
 def process_emissions(source_db, target_db):
 
