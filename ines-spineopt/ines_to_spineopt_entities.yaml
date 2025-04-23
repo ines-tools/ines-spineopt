@@ -6,8 +6,6 @@ unit__to_node:
   unit__to_node: [[1], [2]]
 node__to_unit: 
   unit__from_node: [[2], [1]]
-unit_flow__unit_flow:
-  unit__node__node: [[1], [2], [3]]
 node__link__node:
   - connection__from_node: [[2], [1]]
   - connection__to_node: [[2], [3]]

@@ -164,6 +164,9 @@ def main():
 
             # lifetime to duration
             lifetime_to_duration(source_db,target_db,settings["lifetime_to_duration"])
+
+             # unit flow transformation
+            unit_flow_variants(source_db,target_db,settings)
         
 
 def process_emissions(source_db, target_db):
@@ -197,7 +200,7 @@ def process_emissions(source_db, target_db):
 
     try:
         target_db.commit_session("Added process capacities")
-    except DBAPIError as e:
+    except:
         print("commit process capacities error")
 
 def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
@@ -244,7 +247,7 @@ def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
           
     try:
         target_db.commit_session("Added historical timeseries error")
-    except DBAPIError as e:
+    except:
         print("commit process historical timeseries error")
 
 def map_of_periods_to_ts(source_db,target_db,settings):
@@ -292,7 +295,7 @@ def map_of_periods_to_ts(source_db,target_db,settings):
           
     try:
         target_db.commit_session("Added map of periods to timeseries")
-    except DBAPIError as e:
+    except:
         print("commit map of periods to timeseries error")
 
 def flow_or_state_profiled(source_db,target_db,settings):
@@ -328,7 +331,7 @@ def flow_or_state_profiled(source_db,target_db,settings):
 
     try:
         target_db.commit_session("Added map of periods to timeseries")
-    except DBAPIError as e:
+    except:
         print("commit map of periods to timeseries error")
 
 def timeline_setup(source_db,target_db):
@@ -388,25 +391,35 @@ def timeline_setup(source_db,target_db):
 
     try:
         target_db.commit_session("Added timeline")
-    except DBAPIError as e:
+    except:
         print("commit timeline error")
 
 def storage_state_fix_method(source_db,target_db):
     
     for storage_method in source_db.get_parameter_value_items(parameter_definition_name = "storage_state_fix_method"):
         if storage_method["parsed_value"] == "fix_start":
-            value_ = source_db.get_parameter_value_item(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], alternative_name = storage_method["alternative_name"], parameter_definition_name = "storage_state_fix")
-            if value_:
-                if value_["type"] == "float":
-                    model_start = target_db.get_parameter_value_items(entity_class_name = "model", parameter_definition_name = "model_start")[0]
-                    value_start_ = (pd.Timestamp(model_start["parsed_value"].value) - pd.Timedelta("1h")).isoformat()
-                    value_ts_ = {"type":"time_series","data": [value_["parsed_value"]],"index": {"start": value_start_,"resolution": "1h","ignore_year": True}}
-                    add_parameter_value(target_db,"node","fix_node_state",value_["alternative_name"],value_["entity_byname"],value_ts_)
+            values_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_state_fix")
+            if values_:
+                for value_ in values_:
+                    if value_["type"] == "float":
+                        '''model_starts = target_db.get_parameter_value_items(entity_class_name = "model", parameter_definition_name = "model_start")
+                        value_start_ = []
+                        value_fix_   = []
+                        for model_start in model_starts:
+                            value_start_.append((pd.Timestamp(model_start["parsed_value"].value) - pd.Timedelta("1h")).isoformat())
+                            value_fix_.append(value_["parsed_value"])
+                            
+                            value_start_.append((pd.Timestamp(model_start["parsed_value"].value)).isoformat())
+                            value_fix_.append(None)'''
+
+                        #value_ts_ = {"type":"time_series","data": dict(zip(value_start_,value_fix_))}
+                        target_value_ = value_["parsed_value"]
+                        add_parameter_value(target_db,"node","initial_node_state",value_["alternative_name"],value_["entity_byname"],target_value_)
             else:
                 print("WARNING: FIXED STATE DOES NOT EXIST ")
     try:
         target_db.commit_session("Added fixed storage state method")
-    except DBAPIError as e:
+    except:
         print("commit fixed storage state error")
 
 def limiting_investments_notallowed(source_db,target_db):
@@ -436,7 +449,7 @@ def limiting_investments_notallowed(source_db,target_db):
 
     try:
         target_db.commit_session("Added candadite assets")
-    except DBAPIError as e:
+    except:
         print("commit candadite assets error")    
 
 def set_to_entities_and_parameters(source_db,target_db):
@@ -483,7 +496,7 @@ def set_to_entities_and_parameters(source_db,target_db):
                     pass
     try:
         target_db.commit_session("Added set constraints")
-    except DBAPIError as e:
+    except:
         print("commit set constraints error")  
 
 def default_parameters(target_db,settings):
@@ -493,7 +506,7 @@ def default_parameters(target_db,settings):
                 add_parameter_value(target_db,target_entity_class,target_parameter,"Base",entity_item["entity_byname"],settings[target_entity_class][target_parameter])
     try:
         target_db.commit_session("Added default_parameters")
-    except DBAPIError as e:
+    except:
         print("commit default_parameters error")  
 
 def candidates_to_number_of(target_db):
@@ -504,7 +517,7 @@ def candidates_to_number_of(target_db):
 
     try:
         target_db.commit_session("Added candidate to number of")
-    except DBAPIError as e:
+    except:
         print("commit candidate to number of error")
 
 def existing_capacity(source_db,target_db):
@@ -523,7 +536,7 @@ def existing_capacity(source_db,target_db):
                 add_parameter_value(target_db,target_entity,target_parameter,alternative,param_map["entity_byname"],vals[i])
     try:
         target_db.commit_session("Added existing capacity")
-    except DBAPIError as e:
+    except:
         print("commit existing capacity error")
 
 def lifetime_to_duration(source_db,target_db,settings):
@@ -541,8 +554,37 @@ def lifetime_to_duration(source_db,target_db,settings):
                 
     try:
         target_db.commit_session("Added lifetime conversion")
-    except DBAPIError as e:
+    except:
         print("commit lifetime conversion error")
+
+def unit_flow_variants(source_db,target_db,settings):
+
+    parameters_mapping = {"equality_ratio":"fix_ratio","less_than_ratio":"max_ratio_","greater_than_ration":"min_ratio_"}
+    for param_map in source_db.get_parameter_value_items(entity_class_name = "unit_flow__unit_flow"):
+
+
+        unit_flow_1 = (param_map["entity_byname"][0],param_map["entity_byname"][1])
+        unit_flow_2 = (param_map["entity_byname"][2],param_map["entity_byname"][3])
+
+        entity_1 = source_db.get_entity_items(entity_byname = unit_flow_1)[0]["entity_class_name"]
+        entity_2 = source_db.get_entity_items(entity_byname = unit_flow_2)[0]["entity_class_name"]
+
+        flow_direction_1 = "in" if entity_1 == "node__to_unit" else "out"
+        flow_direction_2 = "in" if entity_2 == "node__to_unit" else "out"
+
+        unit_name = unit_flow_1[1] if entity_1 == "node__to_unit" else unit_flow_1[0] 
+        node_1 = unit_flow_1[0] if entity_1 == "node__to_unit" else unit_flow_1[1] 
+        node_2 = unit_flow_2[0] if entity_2 == "node__to_unit" else unit_flow_2[1] 
+
+        target_parameter = parameters_mapping[param_map["parameter_definition_name"]]+f"_{flow_direction_1}_{flow_direction_2}_unit_flow"
+
+        add_entity(target_db,"unit__node__node",(unit_name,node_1,node_2))
+        add_parameter_value(target_db,"unit__node__node",target_parameter,param_map["alternative_name"],(unit_name,node_1,node_2),param_map["parsed_value"])
+
+    try:
+        target_db.commit_session("Added unit flows")
+    except:
+        print("commit unit flows error")
 
 if __name__ == "__main__":
     main()
