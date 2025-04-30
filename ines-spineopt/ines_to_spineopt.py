@@ -49,8 +49,8 @@ with open('ines_to_spineopt_entities_to_parameters.yaml', 'r') as file:
 with open('settings.yaml', 'r') as file:
     settings = yaml.safe_load(file)
 
-def add_entity_group(db_map : DatabaseMapping, class_name : str, group : str, member : str, ent_description = None) -> None:
-    _, error = db_map.add_entity_group_item(group_name = group, member_name = member, entity_class_name=class_name, description = ent_description)
+def add_entity_group(db_map : DatabaseMapping, class_name : str, group : str, member : str) -> None:
+    _, error = db_map.add_entity_group_item(group_name = group, member_name = member, entity_class_name=class_name)
     if error is not None:
         raise RuntimeError(error)
     
@@ -136,18 +136,23 @@ def main():
             # target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
 
             # Manual functions
+            # timeline configuration for spineopt model
+            timeline_setup(source_db,target_db)
+
             ## historical time series to alternatives
             map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["map_of_historical_ts_to_scenario_ts"])
+
             ## future time series
             map_of_periods_to_ts(source_db,target_db,settings["map_of_periods_to_ts"])
+
+            ## flow profiles addition
+            flow_profile_method(source_db,target_db)
+
             ## investments not allowed
             limiting_investments_notallowed(source_db,target_db)
 
             # Process emisssions balance equations
             process_emissions(source_db,target_db)
-
-            # timeline configuration for spineopt model
-            timeline_setup(source_db,target_db)
 
             # Fix boundary condition for storages
             storage_state_fix_method(source_db,target_db)
@@ -287,48 +292,12 @@ def map_of_periods_to_ts(source_db,target_db,settings):
 
                         ts_to_export = {"type": "time_series","data": dict(zip(indexes_,values_))}
                         target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
-                        add_parameter_value(target_db,target_entity_class,target_param,"Base",target_names,ts_to_export)
+                        add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,ts_to_export)
                     
                     elif param_map["type"] == "float":
                         target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
                         add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,multiplier*param_map["parsed_value"])
           
-    try:
-        target_db.commit_session("Added map of periods to timeseries")
-    except:
-        print("commit map of periods to timeseries error")
-
-def flow_or_state_profiled(source_db,target_db,settings):
-
-    for source_entity_class in settings:
-        for target_entity_class in settings[source_entity_class]:
-            for source_param in settings[source_entity_class][target_entity_class]:
-                print(source_entity_class,target_entity_class,source_param)
-                param_elements = settings[source_entity_class][target_entity_class][source_param]
-
-                if isinstance(param_elements,list):
-                    target_param = param_elements[0]
-                    multiplier = float(param_elements[1])
-                    target_order = param_elements[2]
-                elif isinstance(param_elements,dict):
-                    target_param = param_elements["target"][0]
-                    target_order = param_elements["target"][2]
-                    op = operations[param_elements["operation"]]
-                    multiplier = op(float(param_elements["target"][1]),float(param_elements["with"]))
-
-                for param_map in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param):
-
-                    if param_map["type"] == "map":
-
-                        index_names = nested_index_names(param_map["parsed_value"])
-
-                        map_table = convert_map_to_table(param_map["parsed_value"])
-                        index_names = nested_index_names(param_map["parsed_value"])
-                        data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
-                        data.index = data.index.astype("string")
-
-                        capacity = source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = "capacity", entity_byname = param_map["entity_byname"], alternative = param_map["alternative_name"])
-
     try:
         target_db.commit_session("Added map of periods to timeseries")
     except:
@@ -402,17 +371,6 @@ def storage_state_fix_method(source_db,target_db):
             if values_:
                 for value_ in values_:
                     if value_["type"] == "float":
-                        '''model_starts = target_db.get_parameter_value_items(entity_class_name = "model", parameter_definition_name = "model_start")
-                        value_start_ = []
-                        value_fix_   = []
-                        for model_start in model_starts:
-                            value_start_.append((pd.Timestamp(model_start["parsed_value"].value) - pd.Timedelta("1h")).isoformat())
-                            value_fix_.append(value_["parsed_value"])
-                            
-                            value_start_.append((pd.Timestamp(model_start["parsed_value"].value)).isoformat())
-                            value_fix_.append(None)'''
-
-                        #value_ts_ = {"type":"time_series","data": dict(zip(value_start_,value_fix_))}
                         target_value_ = value_["parsed_value"]
                         add_parameter_value(target_db,"node","initial_node_state",value_["alternative_name"],value_["entity_byname"],target_value_)
             else:
@@ -427,23 +385,25 @@ def limiting_investments_notallowed(source_db,target_db):
     target_candi = {"unit":"units_existing","link":"links_existing","node":"storages_existing"}
     target_class = {"unit":"unit","link":"connection","node":"node"}
     target_param = {"unit":"candidate_units","link":"candidate_connections","node":"candidate_storages"}
+    fix_param = {"unit":"fix_units_invested","link":"fix_connections_invested","node":"fix_storages_invested"}
 
     for source_param in ["investment_method","storage_investment_method"]:
         for param_map in [i for i in source_db.get_parameter_value_items(parameter_definition_name = source_param) if i["parsed_value"]=="not_allowed"]:
             existing_ = source_db.get_parameter_value_item(entity_class_name = param_map["entity_class_name"], parameter_definition_name = target_candi[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"], alternative_name = param_map["alternative_name"])
             if existing_:
-
                 if existing_["type"] == "map":
                     map_table = convert_map_to_table(existing_["parsed_value"])
                     index_names = nested_index_names(existing_["parsed_value"])
                     data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
                     data.index = data.index.astype("string")
-                    value_ = data["value"].tolist()[0]
+                    value_ = max(data["value"].tolist())
 
                 elif existing_["type"] == "float":
                     value_ = existing_["parsed_value"]
-
-                add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],param_map["alternative_name"],param_map["entity_byname"],value_)
+                
+                add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
+                add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
+                
             else: 
                 print(f"There is no existing capacity in {param_map['entity_class_name']} {param_map['entity_byname']}")
 
@@ -457,10 +417,10 @@ def set_to_entities_and_parameters(source_db,target_db):
     model_duration = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
     resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
     
-    for source_parameter in ["invest_max_total","flow_max_cumulative"]:
+    for source_parameter in ["max_cumulative","flow_max_cumulative"]:
         for source_dict_parameter in source_db.get_parameter_value_items(entity_class_name = "set", parameter_definition_name = source_parameter):
             source_relationships = {relation:element["entity_byname"] for relation in ["set__unit_flow","set__node","set__unit","set__link"] for element in source_db.get_entity_items(entity_class_name = relation) if element["entity_byname"][0] == source_dict_parameter["entity_byname"][0]}
-            if source_parameter == "invest_max_total":
+            if source_parameter == "max_cumulative":
                 try:
                     add_entity(target_db,"investment_group",source_dict_parameter["entity_byname"])
                     print("Entity already created","investment_group",source_dict_parameter["entity_byname"])
@@ -585,6 +545,58 @@ def unit_flow_variants(source_db,target_db,settings):
         target_db.commit_session("Added unit flows")
     except:
         print("commit unit flows error")
+
+def flow_profile_method(source_db,target_db):
+
+    duration   = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
+    starttime  = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "start_time")[0]["value"])["data"]
+    resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
+                
+
+    for param_map in source_db.get_parameter_value_items(entity_class_name = "node", alternative_name = "Base", parameter_definition_name = "flow_profile"):
+
+        flow_method = source_db.get_parameter_value_item(entity_class_name = "node", alternative_name = "Base", entity_byname = param_map["entity_byname"], parameter_definition_name = "flow_scaling_method")
+        
+        if flow_method["parsed_value"] == "scale_to_annual":
+            target_name = param_map["entity_name"]+"-group"
+            add_entity(target_db,"node",(target_name,))
+            add_parameter_value(target_db,"node","balance_type","Base",(target_name,),"balance_type_group")
+            add_entity_group(target_db,"node",target_name,param_map["entity_name"])
+            definition_condition = True
+        elif flow_method["parsed_value"] == "use_profile_directly":
+            target_name = param_map["entity_name"]
+            definition_condition = True
+        else:
+            print("flow profile wont be defined")
+            definition_condition = False
+        
+        if definition_condition:
+            if param_map["type"] == "map":
+                index_names = nested_index_names(param_map["parsed_value"])
+                map_table = convert_map_to_table(param_map["parsed_value"])
+                index_names = nested_index_names(param_map["parsed_value"])
+                data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+                data.index = data.index.astype("string")
+
+                if any(i in data.index for i in starttime):
+                    for index, element in enumerate(starttime):
+                        try:
+                            alternative_name = f"wy{str(pd.Timestamp(element).year)}"
+                            add_alternative(target_db,alternative_name)
+                        except:
+                            pass
+                        steps = pd.to_timedelta(duration) / pd.to_timedelta(resolution)
+                        df_data = (-1.0*data.iloc[data.index.tolist().index(element):data.index.tolist().index(element)+int(steps),data.columns.tolist().index("value")]).tolist()
+                        ts_export = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
+                        add_parameter_value(target_db,"node","demand",alternative_name,(target_name,),ts_export)
+            
+            elif param_map["type"] == "float":
+                add_parameter_value(target_db,"node","demand",param_map["alternative_name"],(target_name,),-1.0*param_map["parsed_value"])
+          
+    try:
+        target_db.commit_session("Added flow profile")
+    except:
+        print("commit flow profile error")
 
 if __name__ == "__main__":
     main()
