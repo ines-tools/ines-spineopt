@@ -560,7 +560,7 @@ def flow_profile_method(source_db,target_db):
         if flow_method["parsed_value"] == "scale_to_annual":
             target_name = param_map["entity_name"]+"-group"
             add_entity(target_db,"node",(target_name,))
-            add_parameter_value(target_db,"node","balance_type","Base",(target_name,),"balance_type_group")
+            add_parameter_value(target_db,"node","balance_type","Base",(target_name,),"balance_type_none")
             add_entity_group(target_db,"node",target_name,param_map["entity_name"])
             definition_condition = True
         elif flow_method["parsed_value"] == "use_profile_directly":

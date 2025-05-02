@@ -1,9 +1,9 @@
 node__to_unit:
   unit__from_node:
     capacity: [unit_capacity,1.0,[[2],[1]]]
+unit__to_node:
+  unit__to_node:
+    capacity: [unit_capacity, 1.0,[[1],[2]]]
 link:
   connection:
     links_max_cumulative: candidate_connections
-node__link__node:
-  connection__from_node:
-    capacity: [connection_capacity,1.0,[[2], [1]]]
