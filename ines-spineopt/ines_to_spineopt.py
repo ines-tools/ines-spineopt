@@ -226,7 +226,6 @@ def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
 
                     if param_map["type"] == "map":
                         index_names = nested_index_names(param_map["parsed_value"])
-
                         map_table = convert_map_to_table(param_map["parsed_value"])
                         index_names = nested_index_names(param_map["parsed_value"])
                         data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
@@ -539,7 +538,35 @@ def unit_flow_variants(source_db,target_db,settings):
         target_parameter = parameters_mapping[param_map["parameter_definition_name"]]+f"_{flow_direction_1}_{flow_direction_2}_unit_flow"
 
         add_entity(target_db,"unit__node__node",(unit_name,node_1,node_2))
-        add_parameter_value(target_db,"unit__node__node",target_parameter,param_map["alternative_name"],(unit_name,node_1,node_2),param_map["parsed_value"])
+        
+        if param_map["type"] == "float":
+            add_parameter_value(target_db,"unit__node__node",target_parameter,param_map["alternative_name"],(unit_name,node_1,node_2),param_map["parsed_value"])
+        
+        elif param_map["type"] == "map":
+            
+            duration   = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
+            starttime  = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "start_time")[0]["value"])["data"]
+            resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
+
+            index_names = nested_index_names(param_map["parsed_value"])
+            map_table = convert_map_to_table(param_map["parsed_value"])
+            index_names = nested_index_names(param_map["parsed_value"])
+            data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+            data.index = data.index.astype("string")
+
+            if any(i in data.index for i in starttime):
+                map_export = {"type": "map","index_type": "str", "data":{}}
+                for index, element in enumerate(starttime):
+                    try:
+                        alternative_name = f"wy{str(pd.Timestamp(element).year)}"
+                        add_alternative(target_db,alternative_name)
+                    except:
+                        pass
+                    steps = pd.to_timedelta(duration) / pd.to_timedelta(resolution)
+                    df_data = (data.iloc[data.index.tolist().index(element):data.index.tolist().index(element)+int(steps),data.columns.tolist().index("value")]).tolist()
+                    ts_export = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
+                    add_parameter_value(target_db,"unit__node__node",target_parameter,alternative_name,(unit_name,node_1,node_2),ts_export)
+                   
 
     try:
         target_db.commit_session("Added unit flows")

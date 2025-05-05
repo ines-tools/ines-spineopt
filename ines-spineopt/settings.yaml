@@ -26,6 +26,9 @@ map_of_historical_ts_to_scenario_ts:
   link:
     connection:
       availability: [connection_availability_factor,1.0,[[1]]]
+  node__link__node:
+    connection__node__node:
+      efficiency: [fix_ratio_out_in_connection_flow,1.0,[[2], [3], [1]]]
 
 map_of_periods_to_ts:
   unit__to_node:
@@ -52,8 +55,6 @@ map_of_periods_to_ts:
     connection__from_node:
       operational_cost: [connection_flow_cost, 1.0,[[2],[1]]]
       capacity: [connection_capacity,1.0,[[2], [1]]]
-    connection__node__node:
-      efficiency: [fix_ratio_out_in_connection_flow,1.0,[[2], [3], [1]]]
   node:
     node:
       flow_annual: [fractional_demand,1.0,[[1]]]
