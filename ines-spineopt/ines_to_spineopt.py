@@ -139,11 +139,8 @@ def main():
             # timeline configuration for spineopt model
             timeline_setup(source_db,target_db)
 
-            ## historical time series to alternatives
-            map_of_ts_conversion_ts_alternatives(source_db,target_db,settings["map_of_historical_ts_to_scenario_ts"])
-
-            ## future time series
-            map_of_periods_to_ts(source_db,target_db,settings["map_of_periods_to_ts"])
+            ## historical and future time series
+            map_of_periods_or_historical_to_ts(source_db,target_db,settings["map_of_periods_or_historical_to_ts"])
 
             ## flow profiles addition
             flow_profile_method(source_db,target_db)
@@ -156,6 +153,7 @@ def main():
 
             # Fix boundary condition for storages
             storage_state_fix_method(source_db,target_db)
+            storage_state_binding_method(source_db,target_db)
 
             # Set to group constraints
             set_to_entities_and_parameters(source_db,target_db)
@@ -208,12 +206,18 @@ def process_emissions(source_db, target_db):
     except:
         print("commit process capacities error")
 
-def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
+def map_of_periods_or_historical_to_ts(source_db,target_db,settings):
     
-    duration   = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
-    starttime  = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "start_time")[0]["value"])["data"]
-    resolution = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
-                
+    starttime = {} 
+    year_repr = {} 
+    for period in json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "period")[0]["value"])["data"]:
+        starttime[period] = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "start_time")["value"])["data"]
+        year_repr[period] = source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "years_represented")["parsed_value"]
+
+    duration      = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
+    starttime_sp  = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "start_time")[0]["value"])["data"]
+    resolution    = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "time_resolution")[0]["value"])["data"]
+                             
     for source_entity_class in settings:
         for target_entity_class in settings[source_entity_class]:
             for source_param in settings[source_entity_class][target_entity_class]:
@@ -225,15 +229,29 @@ def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
                     target_param, target_order, multiplier = parameter_features(param_elements,source_db,source_entity_class,param_map["entity_byname"],param_map["alternative_name"])
 
                     if param_map["type"] == "map":
-                        index_names = nested_index_names(param_map["parsed_value"])
+
                         map_table = convert_map_to_table(param_map["parsed_value"])
                         index_names = nested_index_names(param_map["parsed_value"])
                         data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
                         data.index = data.index.astype("string")
 
                         if any(i in data.index for i in starttime):
-                            map_export = {"type": "map","index_type": "str", "data":{}}
-                            for index, element in enumerate(starttime):
+                            indexes_ = []
+                            values_ = []
+                            for period_, ts_index_ in starttime.items():
+                                values_.append(multiplier*(float(data.at[period_,"value"]) if period_ in data.index else 0.0))
+                                
+                                # this should be removed once the fixed resolution is repaired
+                                indexes_.append(ts_index_)
+                            values_.append(values_[-1]) 
+                            indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
+
+                            ts_to_export = {"type": "time_series","data": dict(zip(indexes_,values_))}
+                            target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
+                            add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,ts_to_export)
+                    
+                        if any(i in data.index for i in starttime_sp):
+                            for index, element in enumerate(starttime_sp):
                                 try:
                                     alternative_name = f"wy{str(pd.Timestamp(element).year)}"
                                     add_alternative(target_db,alternative_name)
@@ -245,62 +263,15 @@ def map_of_ts_conversion_ts_alternatives(source_db,target_db,settings):
                                 target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
                                 add_parameter_value(target_db,target_entity_class,target_param,alternative_name,target_names,ts_export)
                     
+                
                     elif param_map["type"] == "float":
                         target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
                         add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,multiplier*param_map["parsed_value"])
           
     try:
-        target_db.commit_session("Added historical timeseries error")
+        target_db.commit_session("Added map of periods, historical data to timeseries")
     except:
-        print("commit process historical timeseries error")
-
-def map_of_periods_to_ts(source_db,target_db,settings):
-    
-    starttime = {} 
-    year_repr = {} 
-    for period in json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "period")[0]["value"])["data"]:
-        starttime[period] = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "start_time")["value"])["data"]
-        year_repr[period] = source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "years_represented")["parsed_value"]
-                    
-    for source_entity_class in settings:
-        for target_entity_class in settings[source_entity_class]:
-            for source_param in settings[source_entity_class][target_entity_class]:
-                print(source_entity_class,target_entity_class,source_param)
-                param_elements = settings[source_entity_class][target_entity_class][source_param]
-
-                for param_map in source_db.get_parameter_value_items(entity_class_name = source_entity_class, parameter_definition_name = source_param):
-
-                    target_param, target_order, multiplier = parameter_features(param_elements,source_db,source_entity_class,param_map["entity_byname"],param_map["alternative_name"])
-
-                    if param_map["type"] == "map":
-
-                        map_table = convert_map_to_table(param_map["parsed_value"])
-                        index_names = nested_index_names(param_map["parsed_value"])
-                        data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
-                        data.index = data.index.astype("string")
-
-                        indexes_ = []
-                        values_ = []
-                        for period_, ts_index_ in starttime.items():
-                            values_.append(multiplier*(float(data.at[period_,"value"]) if period_ in data.index else 0.0))
-                            
-                            # this should be removed once the fixed resolution is repaired
-                            indexes_.append(ts_index_)
-                        values_.append(values_[-1]) 
-                        indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
-
-                        ts_to_export = {"type": "time_series","data": dict(zip(indexes_,values_))}
-                        target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
-                        add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,ts_to_export)
-                    
-                    elif param_map["type"] == "float":
-                        target_names = tuple(["__".join([param_map["entity_byname"][int(i)-1] for i in k]) for k in target_order])
-                        add_parameter_value(target_db,target_entity_class,target_param,param_map["alternative_name"],target_names,multiplier*param_map["parsed_value"])
-          
-    try:
-        target_db.commit_session("Added map of periods to timeseries")
-    except:
-        print("commit map of periods to timeseries error")
+        print("commit map of periods, historical data to timeseries error")
 
 def timeline_setup(source_db,target_db):
 
@@ -365,19 +336,46 @@ def timeline_setup(source_db,target_db):
 def storage_state_fix_method(source_db,target_db):
     
     for storage_method in source_db.get_parameter_value_items(parameter_definition_name = "storage_state_fix_method"):
-        if storage_method["parsed_value"] == "fix_start":
-            values_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_state_fix")
-            if values_:
-                for value_ in values_:
-                    if value_["type"] == "float":
-                        target_value_ = value_["parsed_value"]
-                        add_parameter_value(target_db,"node","initial_node_state",value_["alternative_name"],value_["entity_byname"],target_value_)
-            else:
-                print("WARNING: FIXED STATE DOES NOT EXIST ")
+        capacities_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_capacity")
+        if capacities_:
+            if storage_method["parsed_value"] == "fix_start":
+                values_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_state_fix")
+                if values_:
+                    for capacity_ in capacities_:
+                        for value_ in values_:
+                            if value_["type"] == "float":
+                                if capacity_["type"] == "float":
+                                    target_value_ = value_["parsed_value"]*capacity_["parsed_value"]
+                                if value_["alternative_name"] == capacity_["alternative_name"]:
+                                    alternative_name = value_["alternative_name"]
+                                else:
+                                    if value_["alternative_name"] == "Base":
+                                        alternative_name = capacity_["alternative_name"]
+                                    elif capacity_["alternative_name"] == "Base":
+                                        alternative_name = value_["alternative_name"]
+                                    else:
+                                        add_alternative(target_db,f"{capacity_['alternative_name']}_{value_['alternative_name']}")
+                                        alternative_name = f"{capacity_['alternative_name']}_{value_['alternative_name']}"
+                                add_parameter_value(target_db,"node","initial_node_state",alternative_name,value_["entity_byname"],target_value_)
+                else:
+                    print("WARNING: FIXED STATE DOES NOT EXIST ", storage_method["entity_byname"])
+        else:
+            print("WARNING: CAPACITY NOT DEFINED, THEN FIX STATE NOT ADDED", storage_method["entity_byname"])
     try:
         target_db.commit_session("Added fixed storage state method")
     except:
         print("commit fixed storage state error")
+
+def storage_state_binding_method(source_db,target_db):
+
+    for storage_method in source_db.get_parameter_value_items(parameter_definition_name = "storage_state_binding_method"):
+        if storage_method["parsed_value"] == "leap_over_within_solve":
+            add_entity(target_db,"node__temporal_block",(storage_method["entity_name"],"operations"))
+            add_parameter_value(target_db,"node__temporal_block","cyclic_condition","Base",(storage_method["entity_name"],"operations"),True)
+    try:
+        target_db.commit_session("Added storage state binding method")
+    except:
+        print("commit storage state binding method error")
 
 def limiting_investments_notallowed(source_db,target_db):
 

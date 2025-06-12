@@ -7,29 +7,10 @@ default_parameters:
     discount_rate: 0.05
     # use_economic_representation: True
 
-map_of_historical_ts_to_scenario_ts:
+map_of_periods_or_historical_to_ts:
   unit__to_node:
     unit:
       profile_limit_upper: [unit_availability_factor, 1.0,[[1]]]
-    unit__to_node:
-      profile_fix:  
-        target: [fix_unit_flow, 1.0,[[1],[2]]]
-        operation: multiply
-        with: capacity
-  node:
-    node:
-      storage_state_lower_limit:
-        target: [node_state_min, 1.0,[[1]]]
-        operation: multiply
-        with: storage_capacity
-      storage_capacity: [node_state_cap,1.0,[[1]]]
-  link:
-    connection:
-      availability: [connection_availability_factor,1.0,[[1]]]
-
-map_of_periods_to_ts:
-  unit__to_node:
-    unit:
       investment_cost: [unit_investment_cost, 1.0, [[1]]]
       fixed_cost: 
         target: [fom_cost, 1.0,[[1]]]
@@ -37,6 +18,10 @@ map_of_periods_to_ts:
         with: 8760.0
     unit__to_node:
       other_operational_cost: [vom_cost, 1.0,[[1],[2]]]
+      profile_fix:  
+        target: [fix_unit_flow, 1.0,[[1],[2]]]
+        operation: multiply
+        with: capacity
   node__to_unit:
     unit:
       fixed_cost: 
@@ -48,6 +33,8 @@ map_of_periods_to_ts:
   link: 
     connection:
       investment_cost: [connection_investment_cost,1.0,[[1]]]
+      links_max_cumulative: [candidate_connections,1.0,[[1]]]
+      availability: [connection_availability_factor,1.0,[[1]]]
   node__link__node: 
     connection__from_node:
       operational_cost: [connection_flow_cost, 1.0,[[2],[1]]]
@@ -57,7 +44,10 @@ map_of_periods_to_ts:
   node:
     node:
       flow_annual: [fractional_demand,1.0,[[1]]]
+      storage_state_lower_limit: [node_state_min_factor, 1.0,[[1]]]
+      storage_state_upper_limit: [node_availability_factor, 1.0,[[1]]]
       storages_fix_cumulative: [fix_storages_invested_available,1.0,[[1]]]
+      storages_max_cumulative: [candidate_storages,1.0,[[1]]]
       storage_investment_cost: [storage_investment_cost,1.0,[[1]]]
       storage_fixed_cost: 
         target: [storage_fom_cost, 1.0,[[1]]]
