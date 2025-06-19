@@ -174,6 +174,38 @@ def main():
 
 def process_emissions(source_db, target_db):
 
+    for param_map in source_db.get_parameter_value_items(entity_class_name="set", parameter_definition_name = "co2_max_cumulative"):
+        if param_map:
+            add_entity(target_db,"node",("atmosphere",))
+            add_parameter_value(target_db, "node", "has_state", "Base", ("atmosphere",),True)
+            if param_map["type"] == "map":
+                # getting periods info
+                starttime = {} 
+                year_repr = {} 
+                for period in json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "period")[0]["value"])["data"]:
+                    starttime[period] = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "start_time")["value"])["data"]
+                    year_repr[period] = source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "years_represented")["parsed_value"]
+
+                map_table = convert_map_to_table(param_map["parsed_value"])
+                index_names = nested_index_names(param_map["parsed_value"])
+                data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+                data.index = data.index.astype("string")
+
+                if any(i in data.index for i in starttime):
+                    indexes_ = []
+                    values_ = []
+                    for period_, ts_index_ in starttime.items():
+                        values_.append((float(data.at[period_,"value"]) if period_ in data.index else 0.0))
+                        
+                        # this should be removed once the fixed resolution is repaired
+                        indexes_.append(ts_index_)
+                    values_.append(values_[-1]) 
+                    indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
+
+                    ts_to_export = {"type": "time_series","data": dict(zip(indexes_,[round(i/max(values_),3) for i in values_]))}
+                    add_parameter_value(target_db,"node","node_availability_factor",param_map["alternative_name"],param_map["entity_byname"],ts_to_export)
+                    add_parameter_value(target_db,"node","node_state_cap",param_map["alternative_name"],param_map["entity_byname"],max(values_))
+                    
     # unit flow coming from fossil nodes
     co2_params = source_db.get_parameter_value_items(entity_class_name="node",parameter_definition_name="co2_content",alternative_name="Base")
     co2_value  = {co2_param["entity_name"]:co2_param["parsed_value"] for co2_param in co2_params if co2_param["entity_name"] != "CO2"}
@@ -313,8 +345,8 @@ def timeline_setup(source_db,target_db):
             print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0))
             py_end = (pd.Timestamp(py_start) + pd.Timedelta(duration)).isoformat()
             add_parameter_value(target_db,"model","model_start",period,(model_name,),{"type":"date_time","data":py_start})
-            add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
             add_parameter_value(target_db,"model","model_end",period,(model_name,),{"type":"date_time","data":py_end})
+            # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
 
     # operational_resolution
     temporal_block_name = "operations"
@@ -487,10 +519,13 @@ def existing_capacity(source_db,target_db):
             param_dict = json.loads(param_map["value"].decode("utf-8"))
             param_value = param_dict["data"]
             target_entity = entity_map[param_map["entity_class_name"]]
-            for i, alternative in enumerate(list(param_value.keys())):
-                vals = np.fromiter(param_value.values(), dtype=float)
-                print("existing capacity", param_map["entity_byname"])
-                add_parameter_value(target_db,target_entity,target_parameter,alternative,param_map["entity_byname"],vals[i])
+            vals = np.fromiter(param_value.values(), dtype=float)
+            if len(list(param_value.keys())) > 1:
+                for i, alternative in enumerate(list(param_value.keys())):
+                    print("existing capacity", param_map["entity_byname"])
+                    add_parameter_value(target_db,target_entity,target_parameter,alternative,param_map["entity_byname"],vals[i])
+            else:
+                add_parameter_value(target_db,target_entity,target_parameter,"Base",param_map["entity_byname"],vals[0])
     try:
         target_db.commit_session("Added existing capacity")
     except:
