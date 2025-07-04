@@ -177,7 +177,7 @@ def process_emissions(source_db, target_db):
     for param_map in source_db.get_parameter_value_items(entity_class_name="set", parameter_definition_name = "co2_max_cumulative"):
         if param_map:
             add_entity(target_db,"node",("atmosphere",))
-            add_parameter_value(target_db, "node", "has_state", "Base", ("atmosphere",),True)
+            add_parameter_value(target_db,"node","has_state","Base",("atmosphere",),True)
             if param_map["type"] == "map":
                 # getting periods info
                 starttime = {} 
@@ -202,7 +202,7 @@ def process_emissions(source_db, target_db):
                     values_.append(values_[-1]) 
                     indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
 
-                    ts_to_export = {"type": "time_series","data": dict(zip(indexes_,[round(i/max(values_),3) for i in values_]))}
+                    ts_to_export = {"type": "time_series","data": dict(zip(indexes_,[i/max(values_) for i in values_]))}
                     add_parameter_value(target_db,"node","node_availability_factor",param_map["alternative_name"],param_map["entity_byname"],ts_to_export)
                     add_parameter_value(target_db,"node","node_state_cap",param_map["alternative_name"],param_map["entity_byname"],max(values_))
                     
@@ -323,42 +323,68 @@ def timeline_setup(source_db,target_db):
     
     # historical data
     duration = json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "duration")[0]["value"])
-
+    py_yearrs = []
     # if not multiyear
     if len(periods) == 1:
         print("it is not a multiyear invesment problem")
         # model horizon
         for period in periods:
             py_start = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "start_time", alternative_name = "Base", entity_byname = (period,))["value"])["data"]
-            print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0))
+            py_yearr = source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "years_represented", alternative_name = "Base", entity_byname = (period,))["parsed_value"]
+            py_yearrs.append(py_yearr)
+            print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
             extra_duration = pd.Timedelta("1D") if pd.Timestamp(py_start).year % 4 == 0 else pd.Timedelta("0h")
             py_end = (pd.Timestamp(py_start) + pd.Timedelta(duration) + extra_duration).isoformat()
             add_parameter_value(target_db,"model","model_start","Base",(model_name,),{"type":"date_time","data":py_start})
             add_parameter_value(target_db,"model","model_end","Base",(model_name,),{"type":"date_time","data":py_end})
 
+            # operational_resolution
+            temporal_block_name = "operations"
+            add_entity(target_db,"temporal_block",(temporal_block_name,))
+            add_entity(target_db,"model__default_temporal_block",(model_name,temporal_block_name))
+            add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":resolution})
+            add_parameter_value(target_db,"temporal_block","weight","Base",(temporal_block_name,),py_yearr)
+
     else:
-        print("Instead of multiyear invesmtents, alternatives per planning year")
+        print("Multiyear investment planning")
+        py_starts = []
+        py_ends = []
+        py_yearrs = []
         # model horizon
         for period in periods:
-            add_alternative(target_db,period)
+            # add_alternative(target_db,period)
             py_start = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "start_time", alternative_name = "Base", entity_byname = (period,))["value"])["data"]
-            print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0))
-            py_end = (pd.Timestamp(py_start) + pd.Timedelta(duration)).isoformat()
-            add_parameter_value(target_db,"model","model_start",period,(model_name,),{"type":"date_time","data":py_start})
-            add_parameter_value(target_db,"model","model_end",period,(model_name,),{"type":"date_time","data":py_end})
-            # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
+            py_yearr = source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "years_represented", alternative_name = "Base", entity_byname = (period,))["parsed_value"]
+            py_yearrs.append(py_yearr)
+            # operational_resolution
+            temporal_block_name = f"operations_{period}"
+            add_entity(target_db,"temporal_block",(temporal_block_name,))
+            add_entity(target_db,"model__default_temporal_block",(model_name,temporal_block_name))
+            add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":resolution})
+            if bool(pd.Timestamp(py_start).year % 4 == 0):
+                print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
+                block_start = (pd.Timestamp(py_start) + pd.Timedelta(days=366) - (pd.Timedelta(resolution) if periods.index(period)>0 else pd.Timedelta("0h"))).isoformat()
+                block_end = (pd.Timestamp(py_start) + pd.Timedelta(days=366) + pd.Timedelta(duration)).isoformat()
+            else:
+                block_start = (pd.Timestamp(py_start) - (pd.Timedelta(resolution) if periods.index(period)>0 else pd.Timedelta("0h"))).isoformat()
+                block_end = (pd.Timestamp(py_start) + pd.Timedelta(duration)).isoformat()
 
-    # operational_resolution
-    temporal_block_name = "operations"
-    add_entity(target_db,"temporal_block",(temporal_block_name,))
-    add_entity(target_db,"model__default_temporal_block",(model_name,temporal_block_name))
-    add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":resolution})
+            add_parameter_value(target_db,"temporal_block","block_start","Base",(temporal_block_name,),{"type":"date_time","data":block_start})
+            add_parameter_value(target_db,"temporal_block","block_end","Base",(temporal_block_name,),{"type":"date_time","data":block_end})
+            add_parameter_value(target_db,"temporal_block","weight","Base",(temporal_block_name,),py_yearr)
+            
+            py_starts.append(pd.Timestamp(py_start))
+            py_ends.append(pd.Timestamp(str(int(py_start[:4]) + int(py_yearr))+"-01-01T00:00:00"))
+        
+        add_parameter_value(target_db,"model","model_start","Base",(model_name,),{"type":"date_time","data":min(py_starts).isoformat()})
+        add_parameter_value(target_db,"model","model_end","Base",(model_name,),{"type":"date_time","data":max(py_ends).isoformat()})
+        # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
 
     # investment_resolution
     temporal_block_name = "planning"
     add_entity(target_db,"temporal_block",(temporal_block_name,))
     add_entity(target_db,"model__default_investment_temporal_block",(model_name,temporal_block_name))
-    add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"duration","data":duration})
+    add_parameter_value(target_db,"temporal_block","resolution","Base",(temporal_block_name,),{"type":"array","value_type":"duration","data":[f"{str(int(yearr))}Y" for yearr in py_yearrs]})
 
     try:
         target_db.commit_session("Added timeline")
@@ -402,8 +428,9 @@ def storage_state_binding_method(source_db,target_db):
 
     for storage_method in source_db.get_parameter_value_items(parameter_definition_name = "storage_state_binding_method"):
         if storage_method["parsed_value"] == "leap_over_within_solve":
-            add_entity(target_db,"node__temporal_block",(storage_method["entity_name"],"operations"))
-            add_parameter_value(target_db,"node__temporal_block","cyclic_condition","Base",(storage_method["entity_name"],"operations"),True)
+            for entity_map in target_db.get_entity_items(entity_class_name = "model__default_temporal_block"):
+                add_entity(target_db,"node__temporal_block",(storage_method["entity_name"],entity_map["entity_byname"][1]))
+                add_parameter_value(target_db,"node__temporal_block","cyclic_condition","Base",(storage_method["entity_name"],entity_map["entity_byname"][1]),True)
     try:
         target_db.commit_session("Added storage state binding method")
     except:
@@ -416,22 +443,47 @@ def limiting_investments_notallowed(source_db,target_db):
     target_param = {"unit":"candidate_units","link":"candidate_connections","node":"candidate_storages"}
     fix_param = {"unit":"fix_units_invested","link":"fix_connections_invested","node":"fix_storages_invested"}
 
+    starttime = {} 
+    year_repr = {} 
+
+    for period in json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "period")[0]["value"])["data"]:
+        starttime[period] = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "start_time")["value"])["data"]
+        year_repr[period] = source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "years_represented")["parsed_value"]
+
     for source_param in ["investment_method","storage_investment_method"]:
         for param_map in [i for i in source_db.get_parameter_value_items(parameter_definition_name = source_param) if i["parsed_value"]=="not_allowed"]:
             existing_ = source_db.get_parameter_value_item(entity_class_name = param_map["entity_class_name"], parameter_definition_name = target_candi[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"], alternative_name = param_map["alternative_name"])
             if existing_:
                 if existing_["type"] == "map":
+                    
                     map_table = convert_map_to_table(existing_["parsed_value"])
                     index_names = nested_index_names(existing_["parsed_value"])
                     data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
                     data.index = data.index.astype("string")
-                    value_ = max(data["value"].tolist())
 
+                    if any(i in data.index for i in starttime):
+                        indexes_ = []
+                        values_ = []
+                        for period_, ts_index_ in starttime.items():
+                            values_.append((float(data.at[period_,"value"]) if period_ in data.index else 0.0))
+                            
+                            # this should be removed once the fixed resolution is repaired
+                            indexes_.append(ts_index_)
+                        values_.append(values_[-1]) 
+                        indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
+
+                        if len(values_) > 1:
+                            value_ = {"type": "time_series","data": dict(zip(indexes_,values_))}
+                        else:
+                            value_ = values_[0]
+
+                        add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
+                        add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
+                
                 elif existing_["type"] == "float":
                     value_ = existing_["parsed_value"]
-                
-                add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
-                add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
+                    add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
+                    add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
                 
             else: 
                 print(f"There is no existing capacity in {param_map['entity_class_name']} {param_map['entity_byname']}")
@@ -448,7 +500,11 @@ def set_to_entities_and_parameters(source_db,target_db):
     
     for source_parameter in ["max_cumulative","flow_max_cumulative"]:
         for source_dict_parameter in source_db.get_parameter_value_items(entity_class_name = "set", parameter_definition_name = source_parameter):
-            source_relationships = {relation:element["entity_byname"] for relation in ["set__unit_flow","set__node","set__unit","set__link"] for element in source_db.get_entity_items(entity_class_name = relation) if element["entity_byname"][0] == source_dict_parameter["entity_byname"][0]}
+            source_relationships = {relation: [] for relation in ["set__unit_flow","set__node","set__unit","set__link"]}
+            for relation in source_relationships:  
+                for element in source_db.get_entity_items(entity_class_name = relation):
+                    if element["entity_byname"][0] == source_dict_parameter["entity_byname"][0]:
+                        source_relationships[relation].append(element["entity_byname"])
             if source_parameter == "max_cumulative":
                 try:
                     add_entity(target_db,"investment_group",source_dict_parameter["entity_byname"])
@@ -456,16 +512,19 @@ def set_to_entities_and_parameters(source_db,target_db):
                 except:
                     pass
                 add_parameter_value(target_db,"investment_group","maximum_entities_invested_available",source_dict_parameter["alternative_name"],source_dict_parameter["entity_byname"],source_dict_parameter["parsed_value"])
-                for entity_relation, names_relation in source_relationships.items():
+                for entity_relation, list_relation in source_relationships.items():
                     if entity_relation == "set__unit":
-                        entity_byname = (names_relation[1],names_relation[0])
-                        add_entity(target_db,"unit__investment_group",entity_byname)
+                        for names_relation in list_relation:
+                            entity_byname = (names_relation[1],names_relation[0])
+                            add_entity(target_db,"unit__investment_group",entity_byname)
                     if entity_relation == "set__node":
-                        entity_byname = (names_relation[1],names_relation[0])
-                        add_entity(target_db,"node__investment_group",entity_byname)
+                        for names_relation in list_relation:
+                            entity_byname = (names_relation[1],names_relation[0])
+                            add_entity(target_db,"node__investment_group",entity_byname)
                     if entity_relation == "set__link":
-                        entity_byname = (names_relation[1],names_relation[0])
-                        add_entity(target_db,"connection__investment_group",entity_byname)
+                        for names_relation in list_relation:
+                            entity_byname = (names_relation[1],names_relation[0])
+                            add_entity(target_db,"connection__investment_group",entity_byname)
 
             elif source_parameter == "flow_max_cumulative":
                 if len(source_relationships) == 1:
@@ -520,12 +579,7 @@ def existing_capacity(source_db,target_db):
             param_value = param_dict["data"]
             target_entity = entity_map[param_map["entity_class_name"]]
             vals = np.fromiter(param_value.values(), dtype=float)
-            if len(list(param_value.keys())) > 1:
-                for i, alternative in enumerate(list(param_value.keys())):
-                    print("existing capacity", param_map["entity_byname"])
-                    add_parameter_value(target_db,target_entity,target_parameter,alternative,param_map["entity_byname"],vals[i])
-            else:
-                add_parameter_value(target_db,target_entity,target_parameter,"Base",param_map["entity_byname"],vals[0])
+            add_parameter_value(target_db,target_entity,target_parameter,"Base",param_map["entity_byname"],vals[0])
     try:
         target_db.commit_session("Added existing capacity")
     except:
