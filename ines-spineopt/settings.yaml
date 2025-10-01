@@ -8,6 +8,10 @@ default_parameters:
     # use_economic_representation: True
 
 map_of_periods_or_historical_to_ts:
+  unit:
+    unit:
+      availability: [unit_availability_factor, 1.0,[[1]]]
+      units_fix_cumulative: [fix_units_invested_available, 1.0, [[1]]]
   unit__to_node:
     unit:
       profile_limit_upper: [unit_availability_factor, 1.0,[[1]]]
