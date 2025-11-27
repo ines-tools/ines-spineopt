@@ -58,7 +58,12 @@ map_of_periods_or_historical_to_ts:
         operation: divide
         with: 8760
       commodity_price: [tax_out_unit_flow,1.0,[[1]]]
-      
+
+link_parameters_to_directions:
+  efficiency: [connection__node__node,fix_ratio_out_in_connection_flow,1.0,[[2], [3], [1]]]
+  operational_cost: [connection__to_node,connection_flow_cost,1.0,[[2], [3]]]
+  capacity: [connection__to_node,connection_capacity,1.0,[[2], [3]]]
+
 lifetime_to_duration:
   unit:
     unit: 

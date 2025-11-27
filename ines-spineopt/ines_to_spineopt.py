@@ -168,8 +168,11 @@ def main():
             # lifetime to duration
             lifetime_to_duration(source_db,target_db,settings["lifetime_to_duration"])
 
-             # unit flow transformation
+            # unit flow transformation
             unit_flow_variants(source_db,target_db,settings)
+
+            # Link common parameter to all direction parameters
+            link_parameters_to_directions(source_db,target_db,settings["link_parameters_to_directions"])
         
 
 def process_emissions(source_db, target_db):
@@ -773,6 +776,25 @@ def flow_profile_method(source_db,target_db):
         target_db.commit_session("Added flow profile")
     except:
         print("commit flow profile error")
+
+def link_parameters_to_directions(source_db,target_db,settings):
+
+    for source_parameter in settings:
+        for parameter_map in source_db.get_parameter_value_items(entity_class_name = "link", parameter_definition_name = source_parameter):
+            for entity_direction in [entity_i for entity_i in source_db.get_entity_items(entity_class_name = "node__link__node") if entity_i["entity_byname"][1] == parameter_map["entity_byname"][0]]:
+                if parameter_map["type"] == "float":
+                    target_class = settings[source_parameter][0]
+                    target_entity = tuple(["__".join([entity_direction["entity_byname"][int(i)-1] for i in k]) for k in settings[source_parameter][3]])
+                    target_parameter = settings[source_parameter][1]
+                    target_value = settings[source_parameter][2] * parameter_map["parsed_value"]
+                    target_alternative = parameter_map["alternative_name"]
+
+                    print(target_class,target_parameter,target_entity)
+                    add_parameter_value(target_db,target_class,target_parameter,target_alternative,target_entity,target_value)
+    try:
+        target_db.commit_session("Added link parameters")
+    except:
+        print("commit link parameters error")
 
 if __name__ == "__main__":
     main()
