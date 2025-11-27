@@ -177,7 +177,7 @@ def process_emissions(source_db, target_db):
     for param_map in source_db.get_parameter_value_items(entity_class_name="set", parameter_definition_name = "co2_max_cumulative"):
         if param_map:
             add_entity(target_db,"node",("atmosphere",))
-            add_parameter_value(target_db,"node","has_state","Base",("atmosphere",),True)
+            add_parameter_value(target_db,"node","has_state",param_map["alternative_name"],("atmosphere",),True) #Base
             if param_map["type"] == "map":
                 # getting periods info
                 starttime = {} 
@@ -326,7 +326,7 @@ def timeline_setup(source_db,target_db):
     py_yearrs = []
     # if not multiyear
     if len(periods) == 1:
-        print("it is not a multiyear invesment problem")
+        print("it is not a multiyear investment problem")
         # model horizon
         for period in periods:
             py_start = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "start_time", alternative_name = "Base", entity_byname = (period,))["value"])["data"]
@@ -620,10 +620,10 @@ def existing_capacity(source_db,target_db):
                 param_value = param_dict["data"]
                 target_entity = entity_map[param_map["entity_class_name"]]
                 vals = np.fromiter(param_value.values(), dtype=float)
-                add_parameter_value(target_db,target_entity,target_parameter,"Base",param_map["entity_byname"],vals[0])
+                add_parameter_value(target_db,target_entity,target_parameter,param_map["alternative_name"],param_map["entity_byname"],vals[0]) #Base
             elif param_map["type"] == "float":
                 target_entity = entity_map[param_map["entity_class_name"]]
-                add_parameter_value(target_db,target_entity,target_parameter,"Base",param_map["entity_byname"],param_map["parsed_value"])
+                add_parameter_value(target_db,target_entity,target_parameter,param_map["alternative_name"],param_map["entity_byname"],param_map["parsed_value"]) #Base
     try:
         target_db.commit_session("Added existing capacity")
     except:
@@ -766,6 +766,11 @@ def flow_profile_method(source_db,target_db):
                         ts_export = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
                         add_parameter_value(target_db,"node","demand",alternative_name,(target_name,),ts_export)
             
+            elif param_map["type"] == "time_series":
+                # the values still need to be multiplied with -1 ... or not, as flextool assumes negative demand values ... This needs to be aligned.
+                print("warning, the timeseries type is currently not inversed (as opposed to the float type and the map of a series)")
+                add_parameter_value(target_db,"node","demand",param_map["alternative_name"],(target_name,),param_map["parsed_value"])
+
             elif param_map["type"] == "float":
                 add_parameter_value(target_db,"node","demand",param_map["alternative_name"],(target_name,),-1.0*param_map["parsed_value"])
           
