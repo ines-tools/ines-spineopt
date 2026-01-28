@@ -864,7 +864,7 @@ def timeline_setup(source_db, target_db):
         )
         # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
 
-    # investment_resolution
+    # investment_resolution # should not be created if there are only operational parameters in the database
     temporal_block_name = "planning"
     add_entity(target_db, "temporal_block", (temporal_block_name,))
     add_entity(
