@@ -8,6 +8,7 @@ from ines_tools import ines_transform
 import pandas as pd
 import json
 import numpy as np
+import importlib
 
 
 def nested_index_names(value, names=None, depth=0):
@@ -50,17 +51,7 @@ else:
         ""
     )
 
-with open("ines_to_spineopt_entities.yaml", "r") as file:
-    entities_to_copy = yaml.load(file, yaml.BaseLoader)
-with open("ines_to_spineopt_parameters.yaml", "r") as file:
-    parameter_transforms = yaml.load(file, yaml.BaseLoader)
-with open("ines_to_spineopt_methods.yaml", "r") as file:
-    parameter_methods = yaml.safe_load(file)
-with open("ines_to_spineopt_entities_to_parameters.yaml", "r") as file:
-    entities_to_parameters = yaml.load(file, yaml.BaseLoader)
-with open("settings.yaml", "r") as file:
-    settings = yaml.safe_load(file)
-
+settings = read_yaml("settings.yaml")
 
 def add_entity_group(
     db_map: DatabaseMapping, class_name: str, group: str, member: str
@@ -162,6 +153,12 @@ def parameter_features(
 
     return target_param, target_order, multiplier
 
+def read_yaml(name: str) -> dict:
+    _resources = importlib.resources.files("ines_spineopt.resources")
+    path, *_ = (f for f in _resources.iterdir() if f.name == name)
+
+    with open(str(path)) as yaml_file:
+        return yaml.safe_load(yaml_file)
 
 def main():
     with DatabaseMapping(url_db_in) as source_db:
@@ -187,18 +184,22 @@ def main():
                 )
 
             ## Copy entites
+            entities_to_copy = read_yaml("ines_to_spineopt_entities.yaml")
             target_db = ines_transform.copy_entities(
                 source_db, target_db, entities_to_copy
             )
             ## Copy numeric parameters(source_db, target_db, copy_entities)
+            parameter_transforms = read_yaml("ines_to_spineopt_parameters.yaml")
             target_db = ines_transform.transform_parameters(
                 source_db, target_db, parameter_transforms
             )
             ## Copy methods(source_db, target_db, copy_entities)
+            parameter_methods = read_yaml("ines_to_spineopt_methods.yaml")
             target_db = ines_transform.process_methods(
                 source_db, target_db, parameter_methods
             )
             ## Copy entities to parameters
+            # entities_to_parameters = read_yaml("ines_to_spineopt_entities_to_parameters.yaml")
             # target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
 
             # Manual functions
