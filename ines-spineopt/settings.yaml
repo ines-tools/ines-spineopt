@@ -28,6 +28,7 @@ map_of_periods_or_historical_to_ts:
         with: capacity
   node__to_unit:
     unit:
+      investment_cost: [unit_investment_cost, 1.0, [[2]]]
       fixed_cost: 
         target: [fom_cost, 1.0,[[2]]]
         operation: divide
