@@ -198,6 +198,30 @@ def main():
             target_db = ines_transform.process_methods(
                 source_db, target_db, parameter_methods
             )
+
+            # Convert min_up_time and min_down_time from float hours to duration
+            for duration_param in ["min_up_time", "min_down_time"]:
+                for pv in target_db.get_parameter_value_items(
+                    entity_class_name="unit",
+                    parameter_definition_name=duration_param,
+                ):
+                    hours = pv["parsed_value"]
+                    if isinstance(hours, (int, float)):
+                        db_val, val_type = api.to_database(
+                            {"type": "duration", "data": f"{int(hours)}h"}
+                        )
+                        target_db.update_parameter_value_item(
+                            entity_class_name="unit",
+                            entity_byname=pv["entity_byname"],
+                            parameter_definition_name=duration_param,
+                            alternative_name=pv["alternative_name"],
+                            value=db_val,
+                            type=val_type,
+                        )
+            try:
+                target_db.commit_session("Converted min_up/down_time to duration")
+            except:
+                pass
             ## Copy entities to parameters
             # target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
 
@@ -219,6 +243,9 @@ def main():
             # Process emisssions balance equations
             process_emissions(source_db, target_db)
 
+            # CO2 price
+            process_co2_price(source_db, target_db)
+
             # Fix boundary condition for storages
             storage_state_fix_method(source_db, target_db)
             storage_state_binding_method(source_db, target_db)
@@ -239,6 +266,15 @@ def main():
             # unit flow transformation
             unit_flow_variants(source_db, target_db, settings)
 
+            # conversion coefficients to unit_flow__unit_flow ratios
+            process_conversion_coefficients(source_db, target_db)
+
+            # user constraints from INES constraint coefficients
+            process_constraints(source_db, target_db)
+
+            # system discount rate
+            process_system_discount_rate(source_db, target_db)
+
 
 def process_emissions(source_db, target_db):
 
@@ -250,7 +286,7 @@ def process_emissions(source_db, target_db):
             add_parameter_value(
                 target_db,
                 "node",
-                "has_state",
+                "storage_active",
                 param_map["alternative_name"],
                 ("atmosphere",),
                 True,
@@ -321,7 +357,7 @@ def process_emissions(source_db, target_db):
                     add_parameter_value(
                         target_db,
                         "node",
-                        "node_availability_factor",
+                        "storage_state_max_fraction",
                         param_map["alternative_name"],
                         param_map["entity_byname"],
                         ts_to_export,
@@ -329,7 +365,7 @@ def process_emissions(source_db, target_db):
                     add_parameter_value(
                         target_db,
                         "node",
-                        "node_state_cap",
+                        "storage_state_max",
                         param_map["alternative_name"],
                         param_map["entity_byname"],
                         max(values_),
@@ -348,59 +384,59 @@ def process_emissions(source_db, target_db):
     }
 
     for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
-        unit__from_nodes = [
+        input_nodes = [
             from_node
             for from_node in co2_value
             if target_db.get_entity_item(
-                entity_class_name="unit__from_node",
-                entity_byname=(unit_entity["name"], from_node),
+                entity_class_name="node__to_unit",
+                entity_byname=(from_node, unit_entity["name"]),
             )
         ]
         unit_name = unit_entity["name"]
-        if len(unit__from_nodes) > 1:
+        if len(input_nodes) > 1:
             add_entity(target_db, "unit__to_node", (unit_name, "atmosphere"))
             add_entity(target_db, "user_constraint", (unit_name + "_emissions",))
             add_entity(
                 target_db,
-                "unit__to_node__user_constraint",
+                "unit_flow__user_constraint",
                 (unit_name, "atmosphere", unit_name + "_emissions"),
             )
             add_parameter_value(
                 target_db,
-                "unit__to_node__user_constraint",
-                "unit_flow_coefficient",
+                "unit_flow__user_constraint",
+                "coefficient_for_unit_flow",
                 "Base",
                 (unit_name, "atmosphere", unit_name + "_emissions"),
                 -1.0,
             )
-            for from_node in unit__from_nodes:
+            for from_node in input_nodes:
                 add_entity(
                     target_db,
-                    "unit__from_node__user_constraint",
-                    (unit_name, from_node, unit_name + "_emissions"),
+                    "unit_flow__user_constraint",
+                    (from_node, unit_name, unit_name + "_emissions"),
                 )
                 add_parameter_value(
                     target_db,
-                    "unit__from_node__user_constraint",
-                    "unit_flow_coefficient",
+                    "unit_flow__user_constraint",
+                    "coefficient_for_unit_flow",
                     "Base",
-                    (unit_name, from_node, unit_name + "_emissions"),
+                    (from_node, unit_name, unit_name + "_emissions"),
                     co2_value[from_node],
                 )
-        elif len(unit__from_nodes) == 1:
+        elif len(input_nodes) == 1:
             add_entity(target_db, "unit__to_node", (unit_name, "atmosphere"))
             add_entity(
                 target_db,
-                "unit__node__node",
-                (unit_name, "atmosphere", unit__from_nodes[0]),
+                "unit_flow__unit_flow",
+                (unit_name, "atmosphere", input_nodes[0], unit_name),
             )
             add_parameter_value(
                 target_db,
-                "unit__node__node",
-                "fix_ratio_out_in_unit_flow",
+                "unit_flow__unit_flow",
+                "constraint_equality_flow_ratio",
                 "Base",
-                (unit_name, "atmosphere", unit__from_nodes[0]),
-                co2_value[unit__from_nodes[0]],
+                (unit_name, "atmosphere", input_nodes[0], unit_name),
+                co2_value[input_nodes[0]],
             )
 
     for entity_items in [
@@ -410,14 +446,14 @@ def process_emissions(source_db, target_db):
     ]:
         entity_byname = entity_items["entity_byname"]
         unit_name, node_out = entity_byname
-        add_entity(target_db, "unit__from_node", (unit_name, "atmosphere"))
-        add_entity(target_db, "unit__node__node", (unit_name, node_out, "atmosphere"))
+        add_entity(target_db, "node__to_unit", ("atmosphere", unit_name))
+        add_entity(target_db, "unit_flow__unit_flow", (unit_name, node_out, "atmosphere", unit_name))
         add_parameter_value(
             target_db,
-            "unit__node__node",
-            "fix_ratio_out_in_unit_flow",
+            "unit_flow__unit_flow",
+            "constraint_equality_flow_ratio",
             "Base",
-            (unit_name, node_out, "atmosphere"),
+            (unit_name, node_out, "atmosphere", unit_name),
             1.0,
         )
 
@@ -832,14 +868,6 @@ def timeline_setup(source_db, target_db):
                 (temporal_block_name,),
                 py_yearr,
             )
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "has_free_start",
-                "Base",
-                (temporal_block_name,),
-                True,
-            )
 
             py_starts.append(pd.Timestamp(py_start))
             py_ends.append(
@@ -878,11 +906,7 @@ def timeline_setup(source_db, target_db):
         "resolution",
         "Base",
         (temporal_block_name,),
-        {
-            "type": "array",
-            "value_type": "duration",
-            "data": [f"{str(int(yearr))}Y" for yearr in py_yearrs],
-        },
+        {"type": "duration", "data": resolution},
     )
 
     try:
@@ -1008,7 +1032,7 @@ def storage_state_fix_method(source_db, target_db):
                                 add_parameter_value(
                                     target_db,
                                     "node",
-                                    "fix_node_state",
+                                    "storage_state_fix",
                                     alternative_name,
                                     value_["entity_byname"],
                                     target_ts_,
@@ -1071,19 +1095,19 @@ def limiting_investments_notallowed(source_db, target_db):
     }
     target_class = {"unit": "unit", "link": "connection", "node": "node"}
     target_param = {
-        "unit": "candidate_units",
-        "link": "candidate_connections",
-        "node": "candidate_storages",
+        "unit": "investment_count_max_cumulative",
+        "link": "investment_count_max_cumulative",
+        "node": "storage_investment_count_max_cumulative",
     }
     fix_param = {
-        "unit": "fix_units_invested",
-        "link": "fix_connections_invested",
-        "node": "fix_storages_invested",
+        "unit": "investment_count_fix_cumulative",
+        "link": "investment_count_fix_cumulative",
+        "node": "storage_investment_count_fix_cumulative",
     }
     fix_av_param = {
-        "unit": "fix_units_invested_available",
-        "link": "fix_connections_invested_available",
-        "node": "fix_storages_invested_available",
+        "unit": "investment_count_fix_cumulative",
+        "link": "investment_count_fix_cumulative",
+        "node": "storage_investment_count_fix_cumulative",
     }
     starttime = {}
     year_repr = {}
@@ -1207,14 +1231,6 @@ def limiting_investments_notallowed(source_db, target_db):
                         existing_["entity_byname"],
                         value_,
                     )
-                    add_parameter_value(
-                        target_db,
-                        target_class[param_map["entity_class_name"]],
-                        fix_param[param_map["entity_class_name"]],
-                        existing_["alternative_name"],
-                        existing_["entity_byname"],
-                        0.0,
-                    )
                     retirement_method_value = source_db.get_parameter_value_item(
                         entity_class_name=param_map["entity_class_name"],
                         parameter_definition_name=retirement_method[
@@ -1223,16 +1239,18 @@ def limiting_investments_notallowed(source_db, target_db):
                         entity_byname=param_map["entity_byname"],
                         alternative_name="Base",
                     )
-                    if retirement_method_value:
-                        if retirement_method_value["parsed_value"] == "not_retired":
-                            add_parameter_value(
-                                target_db,
-                                target_class[param_map["entity_class_name"]],
-                                fix_av_param[param_map["entity_class_name"]],
-                                existing_["alternative_name"],
-                                existing_["entity_byname"],
-                                value_,
-                            )
+                    if retirement_method_value and retirement_method_value["parsed_value"] == "not_retired":
+                        fix_value = value_
+                    else:
+                        fix_value = 0.0
+                    add_parameter_value(
+                        target_db,
+                        target_class[param_map["entity_class_name"]],
+                        fix_param[param_map["entity_class_name"]],
+                        existing_["alternative_name"],
+                        existing_["entity_byname"],
+                        fix_value,
+                    )
 
             else:
                 print(
@@ -1296,7 +1314,7 @@ def set_to_entities_and_parameters(source_db, target_db):
                 add_parameter_value(
                     target_db,
                     "investment_group",
-                    "maximum_entities_invested_available",
+                    "investment_count_total_max_cumulative",
                     source_dict_parameter["alternative_name"],
                     source_dict_parameter["entity_byname"],
                     source_dict_parameter["parsed_value"],
@@ -1329,14 +1347,17 @@ def set_to_entities_and_parameters(source_db, target_db):
                                 entity_byname=names_relation[1:]
                             )[0]["entity_class_name"]
                             target_entity_class = (
-                                "unit__from_node"
+                                "node__to_unit"
                                 if source_flow == "node__to_unit"
                                 else "unit__to_node"
                             )
                             target_entity_names = (
-                                (names_relation[2], names_relation[1])
+                                (names_relation[1], names_relation[2])
                                 if source_flow == "node__to_unit"
                                 else (names_relation[1], names_relation[2])
+                            )
+                            target_cumulated_param = (
+                                "flow_limits_max_cumulative"
                             )
                             try:
                                 add_entity(
@@ -1354,7 +1375,7 @@ def set_to_entities_and_parameters(source_db, target_db):
                             add_parameter_value(
                                 target_db,
                                 target_entity_class,
-                                "max_total_cumulated_unit_flow_to_node",
+                                target_cumulated_param,
                                 source_dict_parameter["alternative_name"],
                                 target_entity_names,
                                 param_value,
@@ -1388,19 +1409,20 @@ def default_parameters(target_db, settings):
 
 
 def candidates_to_number_of(target_db):
-    parameter_conversion = {
-        "candidate_units": "number_of_units",
-        "candidate_connections": "number_of_connections",
-        "candidate_storages": "number_of_storages",
-    }
-    for parameter_name in parameter_conversion:
+    # For investment candidates, set existing count to 0
+    for entity_class, inv_param, existing_param in [
+        ("unit", "investment_count_max_cumulative", "existing_units"),
+        ("connection", "investment_count_max_cumulative", "existing_connections"),
+        ("node", "storage_investment_count_max_cumulative", "existing_storages"),
+    ]:
         for param_map in target_db.get_parameter_value_items(
-            parameter_definition_name=parameter_name
+            entity_class_name=entity_class,
+            parameter_definition_name=inv_param,
         ):
             add_parameter_value(
                 target_db,
-                param_map["entity_class_name"],
-                parameter_conversion[parameter_name],
+                entity_class,
+                existing_param,
                 param_map["alternative_name"],
                 param_map["entity_byname"],
                 0.0,
@@ -1416,38 +1438,45 @@ def existing_capacity(source_db, target_db):
 
     entity_map = {"unit": "unit", "node": "node", "link": "connection"}
     parameter_conversion = {
-        "units_existing": "initial_units_invested_available",
-        "links_existing": "initial_connections_invested_available",
-        "storages_existing": "initial_storages_invested_available",
+        "units_existing": "existing_units",
+        "links_existing": "existing_connections",
+        "storages_existing": "existing_storages",
     }
     for source_parameter in parameter_conversion:
         target_parameter = parameter_conversion[source_parameter]
         for param_map in source_db.get_parameter_value_items(
             parameter_definition_name=source_parameter
         ):
+            target_entity = entity_map[param_map["entity_class_name"]]
             if param_map["type"] == "map":
                 param_dict = json.loads(param_map["value"].decode("utf-8"))
                 param_value = param_dict["data"]
-                target_entity = entity_map[param_map["entity_class_name"]]
                 vals = np.fromiter(param_value.values(), dtype=float)
-                add_parameter_value(
-                    target_db,
-                    target_entity,
-                    target_parameter,
-                    param_map["alternative_name"],
-                    param_map["entity_byname"],
-                    vals[0],
-                )  # Base
+                value_to_set = vals[0]
             elif param_map["type"] == "float":
-                target_entity = entity_map[param_map["entity_class_name"]]
+                value_to_set = param_map["parsed_value"]
+            else:
+                continue
+            # Try add, if already exists (from candidates_to_number_of), update
+            try:
                 add_parameter_value(
                     target_db,
                     target_entity,
                     target_parameter,
                     param_map["alternative_name"],
                     param_map["entity_byname"],
-                    param_map["parsed_value"],
-                )  # Base
+                    value_to_set,
+                )
+            except RuntimeError:
+                db_val, val_type = api.to_database(value_to_set)
+                target_db.update_parameter_value_item(
+                    entity_class_name=target_entity,
+                    entity_byname=param_map["entity_byname"],
+                    parameter_definition_name=target_parameter,
+                    alternative_name=param_map["alternative_name"],
+                    value=db_val,
+                    type=val_type,
+                )
     try:
         target_db.commit_session("Added existing capacity")
     except:
@@ -1491,45 +1520,29 @@ def lifetime_to_duration(source_db, target_db, settings):
 def unit_flow_variants(source_db, target_db, settings):
 
     parameters_mapping = {
-        "equality_ratio": "fix_ratio",
-        "less_than_ratio": "max_ratio_",
-        "greater_than_ration": "min_ratio_",
+        "equality_ratio": "constraint_equality_flow_ratio",
+        "less_than_ratio": "constraint_less_than_flow_ratio",
+        "greater_than_ration": "constraint_greater_than_flow_ratio",
     }
     for param_map in source_db.get_parameter_value_items(
         entity_class_name="unit_flow__unit_flow"
     ):
 
-        unit_flow_1 = (param_map["entity_byname"][0], param_map["entity_byname"][1])
-        unit_flow_2 = (param_map["entity_byname"][2], param_map["entity_byname"][3])
+        entity_byname = param_map["entity_byname"]  # 4-tuple
+        target_parameter = parameters_mapping[param_map["parameter_definition_name"]]
 
-        entity_1 = source_db.get_entity_items(entity_byname=unit_flow_1)[0][
-            "entity_class_name"
-        ]
-        entity_2 = source_db.get_entity_items(entity_byname=unit_flow_2)[0][
-            "entity_class_name"
-        ]
-
-        flow_direction_1 = "in" if entity_1 == "node__to_unit" else "out"
-        flow_direction_2 = "in" if entity_2 == "node__to_unit" else "out"
-
-        unit_name = unit_flow_1[1] if entity_1 == "node__to_unit" else unit_flow_1[0]
-        node_1 = unit_flow_1[0] if entity_1 == "node__to_unit" else unit_flow_1[1]
-        node_2 = unit_flow_2[0] if entity_2 == "node__to_unit" else unit_flow_2[1]
-
-        target_parameter = (
-            parameters_mapping[param_map["parameter_definition_name"]]
-            + f"_{flow_direction_1}_{flow_direction_2}_unit_flow"
-        )
-
-        add_entity(target_db, "unit__node__node", (unit_name, node_1, node_2))
+        try:
+            add_entity(target_db, "unit_flow__unit_flow", entity_byname)
+        except RuntimeError:
+            pass
 
         if param_map["type"] == "float":
             add_parameter_value(
                 target_db,
-                "unit__node__node",
+                "unit_flow__unit_flow",
                 target_parameter,
                 param_map["alternative_name"],
-                (unit_name, node_1, node_2),
+                entity_byname,
                 param_map["parsed_value"],
             )
 
@@ -1613,10 +1626,10 @@ def unit_flow_variants(source_db, target_db, settings):
                 }
                 add_parameter_value(
                     target_db,
-                    "unit__node__node",
+                    "unit_flow__unit_flow",
                     target_parameter,
                     param_map["alternative_name"],
-                    (unit_name, node_1, node_2),
+                    entity_byname,
                     ts_export,
                 )
 
@@ -1648,10 +1661,10 @@ def unit_flow_variants(source_db, target_db, settings):
                     }
                     add_parameter_value(
                         target_db,
-                        "unit__node__node",
+                        "unit_flow__unit_flow",
                         target_parameter,
                         alternative_name,
-                        (unit_name, node_1, node_2),
+                        entity_byname,
                         ts_export,
                     )
 
@@ -1702,7 +1715,7 @@ def flow_profile_method(source_db, target_db):
                 "balance_type",
                 "Base",
                 (target_name,),
-                "balance_type_none",
+                "none",
             )
             add_entity_group(target_db, "node", target_name, param_map["entity_name"])
             definition_condition = True
@@ -1787,6 +1800,436 @@ def flow_profile_method(source_db, target_db):
         target_db.commit_session("Added flow profile")
     except:
         print("commit flow profile error")
+
+
+def process_conversion_coefficients(source_db, target_db):
+    """Convert INES conversion_coefficients to SpineOpt constraint_equality_flow_ratio on unit_flow__unit_flow."""
+
+    for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
+        unit_name = unit_entity["name"]
+
+        # Find output nodes (unit__to_node in both INES and SpineOpt)
+        unit_outputs = [
+            f["entity_byname"][1]
+            for f in target_db.get_entity_items(entity_class_name="unit__to_node")
+            if f["entity_byname"][0] == unit_name
+        ]
+
+        # Find input nodes (node__to_unit in new SpineOpt, dims: [node, unit])
+        unit_inputs = [
+            f["entity_byname"][0]
+            for f in target_db.get_entity_items(entity_class_name="node__to_unit")
+            if f["entity_byname"][1] == unit_name
+        ]
+
+        if not unit_inputs or not unit_outputs:
+            continue
+
+        # Collect conversion coefficients from source for output flows
+        output_coeffs = {}
+        for out_node in unit_outputs:
+            for cc_item in source_db.get_parameter_value_items(
+                entity_class_name="unit__to_node",
+                parameter_definition_name="conversion_coefficient",
+            ):
+                if cc_item["entity_byname"] == (unit_name, out_node):
+                    alt = cc_item["alternative_name"]
+                    if alt not in output_coeffs:
+                        output_coeffs[alt] = {}
+                    output_coeffs[alt][out_node] = cc_item["parsed_value"]
+
+        # Collect conversion coefficients from source for input flows
+        input_coeffs = {}
+        for in_node in unit_inputs:
+            for cc_item in source_db.get_parameter_value_items(
+                entity_class_name="node__to_unit",
+                parameter_definition_name="conversion_coefficient",
+            ):
+                if cc_item["entity_byname"] == (in_node, unit_name):
+                    alt = cc_item["alternative_name"]
+                    if alt not in input_coeffs:
+                        input_coeffs[alt] = {}
+                    input_coeffs[alt][in_node] = cc_item["parsed_value"]
+
+        # Create unit_flow__unit_flow relationships with ratios
+        all_alternatives = set(list(output_coeffs.keys()) + list(input_coeffs.keys()))
+        for alt in all_alternatives:
+            out_coeffs_alt = output_coeffs.get(alt, {})
+            in_coeffs_alt = input_coeffs.get(alt, {})
+            for out_node, out_coeff in out_coeffs_alt.items():
+                for in_node, in_coeff in in_coeffs_alt.items():
+                    if out_node == in_node:
+                        continue
+                    if isinstance(in_coeff, (int, float)) and in_coeff != 0:
+                        ratio = out_coeff / in_coeff if isinstance(out_coeff, (int, float)) else out_coeff
+                    else:
+                        ratio = out_coeff
+                    # entity_byname: (out_flow_unit, out_flow_node, in_flow_node, in_flow_unit)
+                    uf_byname = (unit_name, out_node, in_node, unit_name)
+                    # Check if unit_flow__unit_flow already exists (e.g. from unit_flow_variants)
+                    existing = target_db.get_entity_item(
+                        entity_class_name="unit_flow__unit_flow",
+                        entity_byname=uf_byname,
+                    )
+                    if not existing:
+                        add_entity(
+                            target_db,
+                            "unit_flow__unit_flow",
+                            uf_byname,
+                        )
+                    # Check if ratio is already set by unit_flow_variants
+                    existing_param = target_db.get_parameter_value_item(
+                        entity_class_name="unit_flow__unit_flow",
+                        entity_byname=uf_byname,
+                        parameter_definition_name="constraint_equality_flow_ratio",
+                        alternative_name=alt,
+                    )
+                    if not existing_param:
+                        add_parameter_value(
+                            target_db,
+                            "unit_flow__unit_flow",
+                            "constraint_equality_flow_ratio",
+                            alt,
+                            uf_byname,
+                            ratio,
+                        )
+
+    try:
+        target_db.commit_session("Added conversion coefficients")
+    except:
+        print("commit conversion coefficients error")
+
+
+def process_constraints(source_db, target_db):
+    """Map INES constraint coefficients to SpineOpt user_constraint relationships."""
+
+    # Map constraint_flow_coefficient from unit__to_node flows
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="unit__to_node",
+        parameter_definition_name="constraint_flow_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                unit_name = param["entity_byname"][0]
+                node_name = param["entity_byname"][1]
+                try:
+                    add_entity(
+                        target_db,
+                        "unit_flow__user_constraint",
+                        (unit_name, node_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "unit_flow__user_constraint",
+                    "coefficient_for_unit_flow",
+                    param["alternative_name"],
+                    (unit_name, node_name, constraint_name),
+                    float(val),
+                )
+
+    # Map constraint_flow_coefficient from node__to_unit flows (→ unit_flow__user_constraint)
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="node__to_unit",
+        parameter_definition_name="constraint_flow_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                node_name = param["entity_byname"][0]
+                unit_name = param["entity_byname"][1]
+                try:
+                    add_entity(
+                        target_db,
+                        "unit_flow__user_constraint",
+                        (node_name, unit_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "unit_flow__user_constraint",
+                    "coefficient_for_unit_flow",
+                    param["alternative_name"],
+                    (node_name, unit_name, constraint_name),
+                    float(val),
+                )
+
+    # Map constraint_unit_count_coefficient from unit → unit__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="unit",
+        parameter_definition_name="constraint_unit_count_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                unit_name = param["entity_byname"][0]
+                try:
+                    add_entity(
+                        target_db,
+                        "unit__user_constraint",
+                        (unit_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "unit__user_constraint",
+                    "coefficient_for_units_invested_available",
+                    param["alternative_name"],
+                    (unit_name, constraint_name),
+                    float(val),
+                )
+
+    # Map constraint_online_coefficient from unit → unit__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="unit",
+        parameter_definition_name="constraint_online_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                unit_name = param["entity_byname"][0]
+                try:
+                    add_entity(
+                        target_db,
+                        "unit__user_constraint",
+                        (unit_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "unit__user_constraint",
+                    "coefficient_for_units_on",
+                    param["alternative_name"],
+                    (unit_name, constraint_name),
+                    float(val),
+                )
+
+    # Map constraint_storage_count_coefficient from node → node__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="node",
+        parameter_definition_name="constraint_storage_count_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                node_name = param["entity_byname"][0]
+                try:
+                    add_entity(
+                        target_db,
+                        "node__user_constraint",
+                        (node_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "node__user_constraint",
+                    "coefficient_for_storages_invested_available",
+                    param["alternative_name"],
+                    (node_name, constraint_name),
+                    float(val),
+                )
+
+    # Map constraint_storage_state_coefficient from node → node__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="node",
+        parameter_definition_name="constraint_storage_state_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                node_name = param["entity_byname"][0]
+                try:
+                    add_entity(
+                        target_db,
+                        "node__user_constraint",
+                        (node_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "node__user_constraint",
+                    "coefficient_for_node_state",
+                    param["alternative_name"],
+                    (node_name, constraint_name),
+                    float(val),
+                )
+
+    # Map constraint_link_count_coefficient from link → connection__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="link",
+        parameter_definition_name="constraint_link_count_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                link_name = param["entity_byname"][0]
+                try:
+                    add_entity(
+                        target_db,
+                        "connection__user_constraint",
+                        (link_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "connection__user_constraint",
+                    "coefficient_for_connections_invested_available",
+                    param["alternative_name"],
+                    (link_name, constraint_name),
+                    float(val),
+                )
+
+    try:
+        target_db.commit_session("Added user constraints")
+    except:
+        print("commit user constraints error")
+
+
+def process_co2_price(source_db, target_db):
+    """Map INES set co2_price to SpineOpt tax_in_unit_flow on the atmosphere node."""
+
+    # Check if atmosphere node exists (created by process_emissions)
+    atmosphere = target_db.get_entity_item(
+        entity_class_name="node", entity_byname=("atmosphere",)
+    )
+    if not atmosphere:
+        return
+
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="set", parameter_definition_name="co2_price"
+    ):
+        if param["type"] == "map":
+            # Period-indexed map: convert to time series
+            starttime = {}
+            year_repr = {}
+            for period in json.loads(
+                source_db.get_parameter_value_items(
+                    entity_class_name="solve_pattern",
+                    parameter_definition_name="period",
+                )[0]["value"]
+            )["data"]:
+                starttime[period] = json.loads(
+                    source_db.get_parameter_value_item(
+                        entity_class_name="period",
+                        entity_byname=(period,),
+                        alternative_name="Base",
+                        parameter_definition_name="start_time",
+                    )["value"]
+                )["data"]
+                year_repr[period] = source_db.get_parameter_value_item(
+                    entity_class_name="period",
+                    entity_byname=(period,),
+                    alternative_name="Base",
+                    parameter_definition_name="years_represented",
+                )["parsed_value"]
+
+            map_table = convert_map_to_table(param["parsed_value"])
+            index_names = nested_index_names(param["parsed_value"])
+            data = pd.DataFrame(
+                map_table, columns=index_names + ["value"]
+            ).set_index(index_names[0])
+            data.index = data.index.astype("string")
+
+            if any(i in data.index for i in starttime):
+                indexes_ = []
+                values_ = []
+                for period_, ts_index_ in starttime.items():
+                    values_.append(
+                        float(data.at[period_, "value"])
+                        if period_ in data.index
+                        else 0.0
+                    )
+                    indexes_.append(ts_index_)
+                values_.append(values_[-1])
+                indexes_.append(
+                    (
+                        pd.Timestamp(ts_index_).replace(
+                            year=int(
+                                pd.Timestamp(ts_index_).year + year_repr[period_]
+                            )
+                        )
+                    ).isoformat()
+                )
+                ts_to_export = {
+                    "type": "time_series",
+                    "data": dict(zip(indexes_, values_)),
+                }
+                add_parameter_value(
+                    target_db,
+                    "node",
+                    "tax_in_unit_flow",
+                    param["alternative_name"],
+                    ("atmosphere",),
+                    ts_to_export,
+                )
+        elif param["type"] == "float":
+            add_parameter_value(
+                target_db,
+                "node",
+                "tax_in_unit_flow",
+                param["alternative_name"],
+                ("atmosphere",),
+                param["parsed_value"],
+            )
+
+    try:
+        target_db.commit_session("Added CO2 price")
+    except:
+        print("commit CO2 price error")
+
+
+def process_system_discount_rate(source_db, target_db):
+    """Map INES system discount_rate to SpineOpt model discount_rate."""
+
+    model_entities = target_db.get_entity_items(entity_class_name="model")
+    if not model_entities:
+        return
+
+    model_name = model_entities[0]["name"]
+
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="system", parameter_definition_name="discount_rate"
+    ):
+        if param["parsed_value"] is not None:
+            # Override default discount rate with actual value from source
+            try:
+                target_db.update_parameter_value_item(
+                    entity_class_name="model",
+                    entity_byname=(model_name,),
+                    parameter_definition_name="discount_rate",
+                    alternative_name=param["alternative_name"],
+                    value=api.to_database(param["parsed_value"])[0],
+                    type=api.to_database(param["parsed_value"])[1],
+                )
+            except:
+                add_parameter_value(
+                    target_db,
+                    "model",
+                    "discount_rate",
+                    param["alternative_name"],
+                    (model_name,),
+                    param["parsed_value"],
+                )
+
+    try:
+        target_db.commit_session("Added system discount rate")
+    except:
+        print("commit system discount rate error")
 
 
 if __name__ == "__main__":
