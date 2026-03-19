@@ -3,6 +3,8 @@ default_parameters:
     unit_investment_variable_type: unit_investment_variable_type_continuous
   connection:
     connection_investment_variable_type: connection_investment_variable_type_continuous
+  node:
+    storage_investment_variable_type: storage_investment_variable_type_continuous
   model:
     discount_rate: 0.05
     # use_economic_representation: True

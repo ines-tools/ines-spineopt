@@ -490,6 +490,7 @@ def limiting_investments_notallowed(source_db,target_db):
 
     for source_param in ["investment_method","storage_investment_method"]:
         for param_map in [i for i in source_db.get_parameter_value_items(parameter_definition_name = source_param) if i["parsed_value"]=="not_allowed"]:
+            add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],param_map["alternative_name"],param_map["entity_byname"],0.0)
             existings_ = source_db.get_parameter_value_items(entity_class_name = param_map["entity_class_name"], parameter_definition_name = target_candi[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"])
             if existings_:
                 for existing_ in existings_:
@@ -518,7 +519,6 @@ def limiting_investments_notallowed(source_db,target_db):
                                 value_ = values_[0]
 
                             add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
-                            add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
                     
                             retirement_method_value = source_db.get_parameter_value_item(entity_class_name=param_map["entity_class_name"],parameter_definition_name=retirement_method[param_map["entity_class_name"]],entity_byname=param_map["entity_byname"],alternative_name="Base")
                             if retirement_method_value:
@@ -528,7 +528,6 @@ def limiting_investments_notallowed(source_db,target_db):
                     elif existing_["type"] == "float":
                         value_ = existing_["parsed_value"]
                         add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
-                        add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
                         retirement_method_value = source_db.get_parameter_value_item(entity_class_name=param_map["entity_class_name"],parameter_definition_name=retirement_method[param_map["entity_class_name"]],entity_byname=param_map["entity_byname"],alternative_name="Base")
                         if retirement_method_value:
                             if retirement_method_value["parsed_value"] =="not_retired":
@@ -600,7 +599,12 @@ def default_parameters(target_db,settings):
     for target_entity_class in settings:
         for entity_item in target_db.get_entity_items(entity_class_name = target_entity_class):
             for target_parameter in settings[target_entity_class]:
-                add_parameter_value(target_db,target_entity_class,target_parameter,"Base",entity_item["entity_byname"],settings[target_entity_class][target_parameter])
+                print(f"Adding {target_parameter} {entity_item["entity_byname"]}")
+                try:
+                    add_parameter_value(target_db,target_entity_class,target_parameter,"Base",entity_item["entity_byname"],settings[target_entity_class][target_parameter])
+                except:
+                    print(f"It seems to be previously added {target_parameter} {entity_item["entity_byname"]}")
+
     try:
         target_db.commit_session("Added default_parameters")
     except:
