@@ -410,43 +410,48 @@ def storage_state_fix_method(source_db,target_db):
             if storage_method["parsed_value"] == "fix_start":
                 values_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_state_fix")
                 if values_:
-                    existing_ = source_db.get_parameter_value_item(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storages_existing", alternative_name = "Base")
-                    if not existing_:
-                        multiplier = 1.0
-                    else:
-                        if existing_["type"] == "float":
-                            multiplier = existing_["parsed_value"]
-                        elif existing_["type"] == "map":
-                            if len(existing_["parsed_value"].values) == 1:
-                                multiplier = existing_["parsed_value"].values[0]
-                            else:
-                                multiplier = dict(zip(existing_["parsed_value"].indexes,existing_["parsed_value"].values))
-
-                    for capacity_ in capacities_:
-                        for value_ in values_:
-                            if value_["type"] == "float":
-                                if capacity_["type"] == "float":
-                                    target_value_ = value_["parsed_value"]*capacity_["parsed_value"]
-                                if value_["alternative_name"] == capacity_["alternative_name"]:
-                                    alternative_name = value_["alternative_name"]
+                    existings_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storages_existing")
+                    
+                    for existing_ in existings_:
+                        if not existing_:
+                            multiplier = 1.0
+                        else:
+                            if existing_["type"] == "float":
+                                multiplier = existing_["parsed_value"]
+                            elif existing_["type"] == "map":
+                                if len(existing_["parsed_value"].values) == 1:
+                                    multiplier = existing_["parsed_value"].values[0]
                                 else:
-                                    if value_["alternative_name"] == "Base":
-                                        alternative_name = capacity_["alternative_name"]
-                                    elif capacity_["alternative_name"] == "Base":
-                                        alternative_name = value_["alternative_name"]
-                                    else:
-                                        add_alternative(target_db,f"{capacity_['alternative_name']}_{value_['alternative_name']}")
-                                        alternative_name = f"{capacity_['alternative_name']}_{value_['alternative_name']}"
+                                    multiplier = dict(zip(existing_["parsed_value"].indexes,existing_["parsed_value"].values))
 
-                                indexes_ = []
-                                vals_ = []
-                                for period, block_start in block_starts.items():
-                                    indexes_.append((pd.Timestamp(block_start) - pd.Timedelta(resolution)).isoformat())
-                                    indexes_.append(block_start)
-                                    vals_.append((multiplier if isinstance(multiplier,float) else multiplier[period])*target_value_)
-                                    vals_.append(None)
-                                target_ts_ = {"type":"time_series","data":dict(zip(indexes_,vals_))}
-                                add_parameter_value(target_db,"node","fix_node_state",alternative_name,value_["entity_byname"],target_ts_)
+                        for capacity_ in capacities_:
+                            for value_ in values_:
+                                if value_["type"] == "float":
+                                    if capacity_["type"] == "float":
+                                        target_value_ = value_["parsed_value"]*capacity_["parsed_value"]
+
+
+                                        alternatives = [i for i in [value_["alternative_name"],capacity_["alternative_name"],existing_["alternative_name"]] if i != "Base"]
+                                        if len(alternatives) == 0:
+                                            alternative_name = "Base"
+                                        elif len(alternatives) == 1:
+                                            alternative_name = alternatives[0]
+                                        else:
+                                            alternative_name = "_".join(alternatives)
+                                            try:
+                                                add_alternative(target_db,alternative_name)
+                                            except:
+                                                print(f"{alternative_name} alternative already added")
+
+                                    indexes_ = []
+                                    vals_ = []
+                                    for period, block_start in block_starts.items():
+                                        indexes_.append((pd.Timestamp(block_start) - pd.Timedelta(resolution)).isoformat())
+                                        indexes_.append(block_start)
+                                        vals_.append((multiplier if isinstance(multiplier,float) else multiplier[period])*target_value_)
+                                        vals_.append(None)
+                                    target_ts_ = {"type":"time_series","data":dict(zip(indexes_,vals_))}
+                                    add_parameter_value(target_db,"node","fix_node_state",alternative_name,value_["entity_byname"],target_ts_)
                 else:
                     print("WARNING: FIXED STATE DOES NOT EXIST ", storage_method["entity_byname"])
         else:
@@ -485,48 +490,49 @@ def limiting_investments_notallowed(source_db,target_db):
 
     for source_param in ["investment_method","storage_investment_method"]:
         for param_map in [i for i in source_db.get_parameter_value_items(parameter_definition_name = source_param) if i["parsed_value"]=="not_allowed"]:
-            existing_ = source_db.get_parameter_value_item(entity_class_name = param_map["entity_class_name"], parameter_definition_name = target_candi[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"], alternative_name = param_map["alternative_name"])
-            if existing_:
-                if existing_["type"] == "map":
+            existings_ = source_db.get_parameter_value_items(entity_class_name = param_map["entity_class_name"], parameter_definition_name = target_candi[param_map["entity_class_name"]], entity_byname = param_map["entity_byname"])
+            if existings_:
+                for existing_ in existings_:
+                    if existing_["type"] == "map":
+                        
+                        map_table = convert_map_to_table(existing_["parsed_value"])
+                        index_names = nested_index_names(existing_["parsed_value"])
+                        data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+                        data.index = data.index.astype("string")
+
+                        if any(i in data.index for i in starttime):
+                            indexes_ = []
+                            values_ = []
+                            for period_, ts_index_ in starttime.items():
+                                if period_ in data.index:
+                                    values_.append(float(data.at[period_,"value"]))
+                                    # this should be removed once the fixed resolution is repaired
+                                    indexes_.append(ts_index_)
+
+                            values_.append(values_[-1]) 
+                            indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
+
+                            if len(data) > 1:
+                                value_ = {"type": "time_series","data": dict(zip(indexes_,values_))}
+                            else:
+                                value_ = values_[0]
+
+                            add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
+                            add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
                     
-                    map_table = convert_map_to_table(existing_["parsed_value"])
-                    index_names = nested_index_names(existing_["parsed_value"])
-                    data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
-                    data.index = data.index.astype("string")
+                            retirement_method_value = source_db.get_parameter_value_item(entity_class_name=param_map["entity_class_name"],parameter_definition_name=retirement_method[param_map["entity_class_name"]],entity_byname=param_map["entity_byname"],alternative_name="Base")
+                            if retirement_method_value:
+                                if retirement_method_value["parsed_value"] =="not_retired":
+                                    add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_av_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
 
-                    if any(i in data.index for i in starttime):
-                        indexes_ = []
-                        values_ = []
-                        for period_, ts_index_ in starttime.items():
-                            if period_ in data.index:
-                                values_.append(float(data.at[period_,"value"]))
-                                # this should be removed once the fixed resolution is repaired
-                                indexes_.append(ts_index_)
-
-                        values_.append(values_[-1]) 
-                        indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
-
-                        if len(data) > 1:
-                            value_ = {"type": "time_series","data": dict(zip(indexes_,values_))}
-                        else:
-                            value_ = values_[0]
-
+                    elif existing_["type"] == "float":
+                        value_ = existing_["parsed_value"]
                         add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
                         add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
-                
                         retirement_method_value = source_db.get_parameter_value_item(entity_class_name=param_map["entity_class_name"],parameter_definition_name=retirement_method[param_map["entity_class_name"]],entity_byname=param_map["entity_byname"],alternative_name="Base")
                         if retirement_method_value:
                             if retirement_method_value["parsed_value"] =="not_retired":
                                 add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_av_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
-
-                elif existing_["type"] == "float":
-                    value_ = existing_["parsed_value"]
-                    add_parameter_value(target_db,target_class[param_map["entity_class_name"]],target_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
-                    add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],0.0)
-                    retirement_method_value = source_db.get_parameter_value_item(entity_class_name=param_map["entity_class_name"],parameter_definition_name=retirement_method[param_map["entity_class_name"]],entity_byname=param_map["entity_byname"],alternative_name="Base")
-                    if retirement_method_value:
-                        if retirement_method_value["parsed_value"] =="not_retired":
-                            add_parameter_value(target_db,target_class[param_map["entity_class_name"]],fix_av_param[param_map["entity_class_name"]],existing_["alternative_name"],existing_["entity_byname"],value_)
 
             else: 
                 print(f"There is no existing capacity in {param_map['entity_class_name']} {param_map['entity_byname']}")
@@ -623,10 +629,10 @@ def existing_capacity(source_db,target_db):
                 param_value = param_dict["data"]
                 target_entity = entity_map[param_map["entity_class_name"]]
                 vals = np.fromiter(param_value.values(), dtype=float)
-                add_parameter_value(target_db,target_entity,target_parameter,"Base",param_map["entity_byname"],vals[0])
+                add_parameter_value(target_db,target_entity,target_parameter,param_map["alternative_name"],param_map["entity_byname"],vals[0])
             elif param_map["type"] == "float":
                 target_entity = entity_map[param_map["entity_class_name"]]
-                add_parameter_value(target_db,target_entity,target_parameter,"Base",param_map["entity_byname"],param_map["parsed_value"])
+                add_parameter_value(target_db,target_entity,target_parameter,param_map["alternative_name"],param_map["entity_byname"],param_map["parsed_value"])
     try:
         target_db.commit_session("Added existing capacity")
     except:
