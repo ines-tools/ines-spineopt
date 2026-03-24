@@ -240,11 +240,8 @@ def main():
             ## investments not allowed
             limiting_investments_notallowed(source_db, target_db)
 
-            # Process emisssions balance equations
+            # Process emissions (CO2, SO2, NOx) - flows, limits, and prices
             process_emissions(source_db, target_db)
-
-            # CO2 price
-            process_co2_price(source_db, target_db)
 
             # Fix boundary condition for storages
             storage_state_fix_method(source_db, target_db)
@@ -266,6 +263,9 @@ def main():
             # unit flow transformation
             unit_flow_variants(source_db, target_db, settings)
 
+            # efficiency to unit_flow__unit_flow ratios and operating_points
+            process_efficiency(source_db, target_db)
+
             # conversion coefficients to unit_flow__unit_flow ratios
             process_conversion_coefficients(source_db, target_db)
 
@@ -276,169 +276,329 @@ def main():
             process_system_discount_rate(source_db, target_db)
 
 
-def process_emissions(source_db, target_db):
+def _get_periods_info(source_db):
+    """Get period start times and years represented from the source database."""
+    periods = json.loads(
+        source_db.get_parameter_value_items(
+            entity_class_name="solve_pattern", parameter_definition_name="period"
+        )[0]["value"]
+    )["data"]
+    starttime = {}
+    year_repr = {}
+    for period in periods:
+        starttime[period] = json.loads(
+            source_db.get_parameter_value_item(
+                entity_class_name="period",
+                entity_byname=(period,),
+                alternative_name="Base",
+                parameter_definition_name="start_time",
+            )["value"]
+        )["data"]
+        year_repr[period] = source_db.get_parameter_value_item(
+            entity_class_name="period",
+            entity_byname=(period,),
+            alternative_name="Base",
+            parameter_definition_name="years_represented",
+        )["parsed_value"]
+    return {"periods": periods, "starttime": starttime, "year_repr": year_repr}
 
-    for param_map in source_db.get_parameter_value_items(
-        entity_class_name="set", parameter_definition_name="co2_max_cumulative"
-    ):
-        if param_map:
-            add_entity(target_db, "node", ("atmosphere",))
-            add_parameter_value(
-                target_db,
-                "node",
-                "storage_active",
-                param_map["alternative_name"],
-                ("atmosphere",),
-                True,
-            )  # Base
-            if param_map["type"] == "map":
-                # getting periods info
-                starttime = {}
-                year_repr = {}
-                for period in json.loads(
-                    source_db.get_parameter_value_items(
-                        entity_class_name="solve_pattern",
-                        parameter_definition_name="period",
-                    )[0]["value"]
-                )["data"]:
-                    starttime[period] = json.loads(
-                        source_db.get_parameter_value_item(
-                            entity_class_name="period",
-                            entity_byname=(period,),
-                            alternative_name="Base",
-                            parameter_definition_name="start_time",
-                        )["value"]
-                    )["data"]
-                    year_repr[period] = source_db.get_parameter_value_item(
-                        entity_class_name="period",
-                        entity_byname=(period,),
-                        alternative_name="Base",
-                        parameter_definition_name="years_represented",
-                    )["parsed_value"]
 
-                map_table = convert_map_to_table(param_map["parsed_value"])
-                index_names = nested_index_names(param_map["parsed_value"])
-                data = pd.DataFrame(
-                    map_table, columns=index_names + ["value"]
-                ).set_index(index_names[0])
-                data.index = data.index.astype("string")
-
-                if any(i in data.index for i in starttime):
-                    indexes_ = []
-                    values_ = []
-                    for period_, ts_index_ in starttime.items():
-                        values_.append(
-                            (
-                                float(data.at[period_, "value"])
-                                if period_ in data.index
-                                else 0.0
-                            )
-                        )
-
-                        # this should be removed once the fixed resolution is repaired
-                        indexes_.append(ts_index_)
-                    values_.append(values_[-1])
-                    indexes_.append(
-                        (
-                            pd.Timestamp(ts_index_).replace(
-                                year=int(
-                                    pd.Timestamp(ts_index_).year + year_repr[period_]
-                                )
-                            )
-                        ).isoformat()
-                    )
-
-                    ts_to_export = {
-                        "type": "time_series",
-                        "data": dict(
-                            zip(indexes_, [i / max(values_) for i in values_])
-                        ),
-                    }
-                    add_parameter_value(
-                        target_db,
-                        "node",
-                        "storage_state_max_fraction",
-                        param_map["alternative_name"],
-                        param_map["entity_byname"],
-                        ts_to_export,
-                    )
-                    add_parameter_value(
-                        target_db,
-                        "node",
-                        "storage_state_max",
-                        param_map["alternative_name"],
-                        param_map["entity_byname"],
-                        max(values_),
-                    )
-
-    # unit flow coming from fossil nodes
-    co2_params = source_db.get_parameter_value_items(
-        entity_class_name="node",
-        parameter_definition_name="co2_content",
-        alternative_name="Base",
+def _map_to_time_series(parsed_value, periods_info):
+    """Convert a period-indexed map parameter to a time series dict. Returns None if no period matches."""
+    starttime = periods_info["starttime"]
+    year_repr = periods_info["year_repr"]
+    map_table = convert_map_to_table(parsed_value)
+    index_names = nested_index_names(parsed_value)
+    data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+    data.index = data.index.astype("string")
+    if not any(i in data.index for i in starttime):
+        return None
+    indexes_ = []
+    values_ = []
+    for period_, ts_index_ in starttime.items():
+        values_.append(float(data.at[period_, "value"]) if period_ in data.index else 0.0)
+        indexes_.append(ts_index_)
+    last_period = list(starttime.keys())[-1]
+    values_.append(values_[-1])
+    indexes_.append(
+        pd.Timestamp(starttime[last_period]).replace(
+            year=int(pd.Timestamp(starttime[last_period]).year + year_repr[last_period])
+        ).isoformat()
     )
-    co2_value = {
-        co2_param["entity_name"]: co2_param["parsed_value"]
-        for co2_param in co2_params
-        if co2_param["entity_name"] != "CO2"
-    }
+    return {"type": "time_series", "data": dict(zip(indexes_, values_))}
 
-    for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
-        input_nodes = [
-            from_node
-            for from_node in co2_value
-            if target_db.get_entity_item(
-                entity_class_name="node__to_unit",
-                entity_byname=(from_node, unit_entity["name"]),
-            )
-        ]
-        unit_name = unit_entity["name"]
-        if len(input_nodes) > 1:
-            add_entity(target_db, "unit__to_node", (unit_name, "atmosphere"))
-            add_entity(target_db, "user_constraint", (unit_name + "_emissions",))
-            add_entity(
-                target_db,
-                "unit_flow__user_constraint",
-                (unit_name, "atmosphere", unit_name + "_emissions"),
-            )
+
+def _get_emission_rates_for_type(source_db, target_db, config):
+    """Get per-unit emission rates for a given emission type.
+
+    For CO2: uses co2_content on fuel nodes to determine emission rates per input flow.
+    For SO2/NOx: uses so2_emission_rate/nox_emission_rate on individual flows.
+
+    Returns: dict {unit_name: [(flow_class, node_name, rate, alternative_name), ...]}
+    """
+    rates = {}
+
+    if config["content_param"]:
+        # CO2-style: emission rate is defined on fuel nodes
+        content_params = source_db.get_parameter_value_items(
+            entity_class_name="node",
+            parameter_definition_name=config["content_param"],
+        )
+        content_values = {}
+        for cp in content_params:
+            node_name = cp["entity_name"]
+            if node_name.upper() == config["type"].upper():
+                continue
+            content_values[node_name] = (cp["parsed_value"], cp["alternative_name"])
+
+        for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
+            unit_name = unit_entity["name"]
+            for node_name, (rate, alt) in content_values.items():
+                if target_db.get_entity_item(
+                    entity_class_name="node__to_unit",
+                    entity_byname=(node_name, unit_name),
+                ):
+                    if unit_name not in rates:
+                        rates[unit_name] = []
+                    rates[unit_name].append(("node__to_unit", node_name, rate, alt))
+
+    if config["rate_param"]:
+        # SO2/NOx-style: emission rate is defined per flow
+        for flow_class in ["node__to_unit", "unit__to_node"]:
+            for param in source_db.get_parameter_value_items(
+                entity_class_name=flow_class,
+                parameter_definition_name=config["rate_param"],
+            ):
+                if flow_class == "node__to_unit":
+                    node_name, unit_name = param["entity_byname"]
+                else:
+                    unit_name, node_name = param["entity_byname"]
+                if unit_name not in rates:
+                    rates[unit_name] = []
+                rates[unit_name].append(
+                    (flow_class, node_name, param["parsed_value"], param["alternative_name"])
+                )
+
+    return rates
+
+
+def _create_emission_flows(target_db, emission_node, emission_rates):
+    """Create emission flow relationships (unit__to_node + unit_flow__unit_flow or user_constraint).
+
+    For single-flow units: uses unit_flow__unit_flow with constraint_equality_flow_ratio.
+    For multi-flow units: uses user_constraint with coefficients.
+    """
+    for unit_name, flows in emission_rates.items():
+        try:
+            add_entity(target_db, "unit__to_node", (unit_name, emission_node))
+        except RuntimeError:
+            pass
+
+        if len(flows) == 1:
+            flow_class, node_name, rate, alt = flows[0]
+            if flow_class == "node__to_unit":
+                uf_byname = (unit_name, emission_node, node_name, unit_name)
+            else:
+                uf_byname = (unit_name, emission_node, unit_name, node_name)
+            try:
+                add_entity(target_db, "unit_flow__unit_flow", uf_byname)
+            except RuntimeError:
+                pass
             add_parameter_value(
-                target_db,
-                "unit_flow__user_constraint",
-                "coefficient_for_unit_flow",
-                "Base",
-                (unit_name, "atmosphere", unit_name + "_emissions"),
-                -1.0,
+                target_db, "unit_flow__unit_flow", "constraint_equality_flow_ratio",
+                alt, uf_byname, rate,
             )
-            for from_node in input_nodes:
+        else:
+            constraint_name = unit_name + "_" + emission_node + "_emissions"
+            try:
+                add_entity(target_db, "user_constraint", (constraint_name,))
+            except RuntimeError:
+                pass
+            try:
                 add_entity(
-                    target_db,
-                    "unit_flow__user_constraint",
-                    (from_node, unit_name, unit_name + "_emissions"),
+                    target_db, "unit_flow__user_constraint",
+                    (unit_name, emission_node, constraint_name),
                 )
-                add_parameter_value(
-                    target_db,
-                    "unit_flow__user_constraint",
-                    "coefficient_for_unit_flow",
-                    "Base",
-                    (from_node, unit_name, unit_name + "_emissions"),
-                    co2_value[from_node],
-                )
-        elif len(input_nodes) == 1:
-            add_entity(target_db, "unit__to_node", (unit_name, "atmosphere"))
-            add_entity(
-                target_db,
-                "unit_flow__unit_flow",
-                (unit_name, "atmosphere", input_nodes[0], unit_name),
-            )
+            except RuntimeError:
+                pass
             add_parameter_value(
-                target_db,
-                "unit_flow__unit_flow",
-                "constraint_equality_flow_ratio",
-                "Base",
-                (unit_name, "atmosphere", input_nodes[0], unit_name),
-                co2_value[input_nodes[0]],
+                target_db, "unit_flow__user_constraint", "coefficient_for_unit_flow",
+                "Base", (unit_name, emission_node, constraint_name), -1.0,
+            )
+            for flow_class, node_name, rate, alt in flows:
+                if flow_class == "node__to_unit":
+                    uf_uc_byname = (node_name, unit_name, constraint_name)
+                else:
+                    uf_uc_byname = (unit_name, node_name, constraint_name)
+                try:
+                    add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db, "unit_flow__user_constraint",
+                    "coefficient_for_unit_flow", alt, uf_uc_byname, rate,
+                )
+
+
+def _process_cumulative_emission_limits(target_db, emission_node, cumul_limits, periods_info):
+    """Process cumulative emission limits (*_max_cumulative) from sets."""
+    for param_map in cumul_limits:
+        add_parameter_value(
+            target_db, "node", "storage_active",
+            param_map["alternative_name"], (emission_node,), True,
+        )
+        if param_map["type"] == "map":
+            ts = _map_to_time_series(param_map["parsed_value"], periods_info)
+            if ts:
+                max_val = max(ts["data"].values())
+                if max_val > 0:
+                    fraction_data = {k: v / max_val for k, v in ts["data"].items()}
+                    add_parameter_value(
+                        target_db, "node", "storage_state_max_fraction",
+                        param_map["alternative_name"], (emission_node,),
+                        {"type": "time_series", "data": fraction_data},
+                    )
+                    add_parameter_value(
+                        target_db, "node", "storage_state_max",
+                        param_map["alternative_name"], (emission_node,), max_val,
+                    )
+        elif param_map["type"] == "float":
+            add_parameter_value(
+                target_db, "node", "storage_state_max",
+                param_map["alternative_name"], (emission_node,), param_map["parsed_value"],
             )
 
+
+def _process_period_emission_limits(target_db, config, param_map, emission_rates, periods_info):
+    """Handle per-period emission limits using separate cap nodes per period.
+
+    Creates one cap node per period with storage_active=True and storage_state_max = period limit.
+    Links emitting units to cap nodes with time-varying flow ratios (active only during each period).
+    """
+    emission_type = config["type"]
+    if param_map["type"] != "map":
+        return
+
+    starttime = periods_info["starttime"]
+    year_repr = periods_info["year_repr"]
+    map_table = convert_map_to_table(param_map["parsed_value"])
+    index_names = nested_index_names(param_map["parsed_value"])
+    data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
+    data.index = data.index.astype("string")
+
+    for period_name in data.index:
+        if period_name not in starttime:
+            continue
+
+        cap_node = f"{emission_type}_cap_{period_name}"
+        limit = float(data.at[period_name, "value"])
+
+        add_entity(target_db, "node", (cap_node,))
+        add_parameter_value(
+            target_db, "node", "storage_active",
+            param_map["alternative_name"], (cap_node,), True,
+        )
+        add_parameter_value(
+            target_db, "node", "storage_state_max",
+            param_map["alternative_name"], (cap_node,), limit,
+        )
+
+        # Build time series for ratio: emission_rate during this period, 0 otherwise
+        def _make_period_ratio(rate):
+            ts_indexes = []
+            ts_values = []
+            for p_name, p_start in starttime.items():
+                ts_values.append(rate if p_name == period_name else 0.0)
+                ts_indexes.append(p_start)
+            last_p = list(starttime.keys())[-1]
+            ts_values.append(ts_values[-1])
+            ts_indexes.append(
+                pd.Timestamp(starttime[last_p]).replace(
+                    year=int(pd.Timestamp(starttime[last_p]).year + year_repr[last_p])
+                ).isoformat()
+            )
+            return {"type": "time_series", "data": dict(zip(ts_indexes, ts_values))}
+
+        for unit_name, flows in emission_rates.items():
+            try:
+                add_entity(target_db, "unit__to_node", (unit_name, cap_node))
+            except RuntimeError:
+                pass
+
+            if len(flows) == 1:
+                flow_class, node_name, rate, alt = flows[0]
+                if not isinstance(rate, (int, float)):
+                    continue
+                ts_ratio = _make_period_ratio(rate)
+                if flow_class == "node__to_unit":
+                    uf_byname = (unit_name, cap_node, node_name, unit_name)
+                else:
+                    uf_byname = (unit_name, cap_node, unit_name, node_name)
+                try:
+                    add_entity(target_db, "unit_flow__unit_flow", uf_byname)
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db, "unit_flow__unit_flow", "constraint_equality_flow_ratio",
+                    alt, uf_byname, ts_ratio,
+                )
+            else:
+                # Multiple flows: use user_constraint with time-varying coefficients.
+                # The emission flow coefficient is constant -1 (forces emission_flow=0 when all others are 0).
+                constraint_name = f"{unit_name}_{cap_node}_emissions"
+                try:
+                    add_entity(target_db, "user_constraint", (constraint_name,))
+                except RuntimeError:
+                    pass
+                try:
+                    add_entity(
+                        target_db, "unit_flow__user_constraint",
+                        (unit_name, cap_node, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db, "unit_flow__user_constraint", "coefficient_for_unit_flow",
+                    "Base", (unit_name, cap_node, constraint_name), -1.0,
+                )
+                for flow_class, node_name, rate, alt in flows:
+                    if not isinstance(rate, (int, float)):
+                        continue
+                    ts_coeff = _make_period_ratio(rate)
+                    if flow_class == "node__to_unit":
+                        uf_uc_byname = (node_name, unit_name, constraint_name)
+                    else:
+                        uf_uc_byname = (unit_name, node_name, constraint_name)
+                    try:
+                        add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
+                    except RuntimeError:
+                        pass
+                    add_parameter_value(
+                        target_db, "unit_flow__user_constraint",
+                        "coefficient_for_unit_flow", alt, uf_uc_byname, ts_coeff,
+                    )
+
+
+def _process_emission_prices(target_db, emission_node, prices, periods_info):
+    """Process emission prices (*_price) from sets as tax_in_unit_flow on the emission node."""
+    for param_map in prices:
+        if param_map["type"] == "map":
+            ts = _map_to_time_series(param_map["parsed_value"], periods_info)
+            if ts:
+                add_parameter_value(
+                    target_db, "node", "tax_in_unit_flow",
+                    param_map["alternative_name"], (emission_node,), ts,
+                )
+        elif param_map["type"] == "float":
+            add_parameter_value(
+                target_db, "node", "tax_in_unit_flow",
+                param_map["alternative_name"], (emission_node,), param_map["parsed_value"],
+            )
+
+
+def _handle_explicit_co2_outputs(target_db):
+    """Handle units that explicitly output to nodes containing 'CO2' in their name.
+    Links those flows to the atmosphere node."""
     for entity_items in [
         element
         for element in target_db.get_entity_items(entity_class_name="unit__to_node")
@@ -446,8 +606,14 @@ def process_emissions(source_db, target_db):
     ]:
         entity_byname = entity_items["entity_byname"]
         unit_name, node_out = entity_byname
-        add_entity(target_db, "node__to_unit", ("atmosphere", unit_name))
-        add_entity(target_db, "unit_flow__unit_flow", (unit_name, node_out, "atmosphere", unit_name))
+        try:
+            add_entity(target_db, "node__to_unit", ("atmosphere", unit_name))
+        except RuntimeError:
+            pass
+        try:
+            add_entity(target_db, "unit_flow__unit_flow", (unit_name, node_out, "atmosphere", unit_name))
+        except RuntimeError:
+            pass
         add_parameter_value(
             target_db,
             "unit_flow__unit_flow",
@@ -457,10 +623,90 @@ def process_emissions(source_db, target_db):
             1.0,
         )
 
+
+def process_emissions(source_db, target_db):
+    """Process CO2, SO2, and NOx emissions - create emission nodes, emission flows, limits, and prices."""
+
+    emission_configs = [
+        {
+            "type": "co2",
+            "node_name": "atmosphere",
+            "content_param": "co2_content",
+            "rate_param": None,
+            "max_cumulative": "co2_max_cumulative",
+            "max_period": "co2_max_period",
+            "price": "co2_price",
+        },
+        {
+            "type": "so2",
+            "node_name": "so2_emissions",
+            "content_param": None,
+            "rate_param": "so2_emission_rate",
+            "max_cumulative": "so2_max_cumulative",
+            "max_period": "so2_max_period",
+            "price": "so2_price",
+        },
+        {
+            "type": "nox",
+            "node_name": "nox_emissions",
+            "content_param": None,
+            "rate_param": "nox_emission_rate",
+            "max_cumulative": "nox_max_cumulative",
+            "max_period": "nox_max_period",
+            "price": "nox_price",
+        },
+    ]
+
+    periods_info = _get_periods_info(source_db)
+
+    for config in emission_configs:
+        emission_node = config["node_name"]
+
+        # Get emission rates for this type
+        emission_rates = _get_emission_rates_for_type(source_db, target_db, config)
+
+        # Get limits and prices from sets
+        cumul_limits = source_db.get_parameter_value_items(
+            entity_class_name="set", parameter_definition_name=config["max_cumulative"]
+        )
+        period_limits = source_db.get_parameter_value_items(
+            entity_class_name="set", parameter_definition_name=config["max_period"]
+        )
+        prices = source_db.get_parameter_value_items(
+            entity_class_name="set", parameter_definition_name=config["price"]
+        )
+
+        if not emission_rates and not cumul_limits and not period_limits and not prices:
+            continue
+
+        # Create emission node
+        try:
+            add_entity(target_db, "node", (emission_node,))
+        except RuntimeError:
+            pass
+
+        # Cumulative limits
+        _process_cumulative_emission_limits(target_db, emission_node, cumul_limits, periods_info)
+
+        # Per-period limits
+        for param_map in period_limits:
+            _process_period_emission_limits(
+                target_db, config, param_map, emission_rates, periods_info
+            )
+
+        # Create emission flows
+        _create_emission_flows(target_db, emission_node, emission_rates)
+
+        # Prices
+        _process_emission_prices(target_db, emission_node, prices, periods_info)
+
+    # Handle explicit CO2 output nodes (units with outputs to nodes containing "CO2")
+    _handle_explicit_co2_outputs(target_db)
+
     try:
-        target_db.commit_session("Added process capacities")
+        target_db.commit_session("Added emissions")
     except:
-        print("commit process capacities error")
+        print("commit emissions error")
 
 
 def map_of_periods_or_historical_to_ts(source_db, target_db, settings):
@@ -1802,11 +2048,194 @@ def flow_profile_method(source_db, target_db):
         print("commit flow profile error")
 
 
+def process_efficiency(source_db, target_db):
+    """Transform INES unit.efficiency and unit.conversion_method to SpineOpt flow ratios and operating_points."""
+
+    for eff_param in source_db.get_parameter_value_items(
+        entity_class_name="unit", parameter_definition_name="efficiency"
+    ):
+        unit_name = eff_param["entity_byname"][0]
+        alt = eff_param["alternative_name"]
+
+        # Get conversion method
+        method_item = source_db.get_parameter_value_item(
+            entity_class_name="unit",
+            entity_byname=(unit_name,),
+            parameter_definition_name="conversion_method",
+            alternative_name=alt,
+        )
+        if not method_item:
+            method_item = source_db.get_parameter_value_item(
+                entity_class_name="unit",
+                entity_byname=(unit_name,),
+                parameter_definition_name="conversion_method",
+                alternative_name="Base",
+            )
+        conversion_method = method_item["parsed_value"] if method_item else "constant_efficiency"
+
+        # Skip methods that use conversion_coefficient or unit_flow__unit_flow directly
+        if conversion_method in ("coefficients_only", "piecewise_linear_for_each_flow"):
+            continue
+
+        # Get output and input nodes from SOURCE db to avoid emission nodes
+        unit_outputs = [
+            f["entity_byname"][1]
+            for f in source_db.get_entity_items(entity_class_name="unit__to_node")
+            if f["entity_byname"][0] == unit_name
+        ]
+        unit_inputs = [
+            f["entity_byname"][0]
+            for f in source_db.get_entity_items(entity_class_name="node__to_unit")
+            if f["entity_byname"][1] == unit_name
+        ]
+
+        if not unit_inputs or not unit_outputs:
+            continue
+
+        efficiency = eff_param["parsed_value"]
+
+        if conversion_method == "constant_efficiency":
+            _process_constant_efficiency(
+                target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
+            )
+        elif conversion_method in ("partial_load_efficiency", "piecewise_linear", "piecewise_SOS2"):
+            _process_piecewise_efficiency(
+                target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
+            )
+
+    try:
+        target_db.commit_session("Added efficiency conversions")
+    except:
+        print("commit efficiency conversions error")
+
+
+def _process_constant_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
+    """Handle constant_efficiency: set constraint_equality_flow_ratio = efficiency for each (out, in) pair."""
+    for out_node in unit_outputs:
+        for in_node in unit_inputs:
+            if out_node == in_node:
+                continue
+            uf_byname = (unit_name, out_node, in_node, unit_name)
+            existing = target_db.get_entity_item(
+                entity_class_name="unit_flow__unit_flow", entity_byname=uf_byname
+            )
+            if not existing:
+                try:
+                    add_entity(target_db, "unit_flow__unit_flow", uf_byname)
+                except RuntimeError:
+                    pass
+            existing_param = target_db.get_parameter_value_item(
+                entity_class_name="unit_flow__unit_flow",
+                entity_byname=uf_byname,
+                parameter_definition_name="constraint_equality_flow_ratio",
+                alternative_name=alt,
+            )
+            if not existing_param:
+                add_parameter_value(
+                    target_db, "unit_flow__unit_flow",
+                    "constraint_equality_flow_ratio", alt, uf_byname, efficiency,
+                )
+
+
+def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
+    """Handle piecewise efficiency (partial_load, piecewise_linear, piecewise_SOS2).
+
+    Extracts operating points and efficiencies from the efficiency Map,
+    computes incremental flow ratios, sets operating_points and minimum_operating_point
+    on input flows, and constraint_equality_flow_ratio as array on unit_flow__unit_flow.
+    """
+    if not isinstance(efficiency, Map):
+        return
+
+    operating_points = [float(idx) for idx in efficiency.indexes]
+    efficiencies = [float(val) for val in efficiency.values]
+
+    if len(operating_points) < 2:
+        return
+
+    # Set operating_points and minimum_operating_point on input flows
+    op_array = {"type": "array", "data": operating_points}
+    min_op = operating_points[0]
+    for in_node in unit_inputs:
+        try:
+            add_parameter_value(
+                target_db, "node__to_unit", "operating_points",
+                alt, (in_node, unit_name), op_array,
+            )
+        except RuntimeError:
+            pass
+        try:
+            add_parameter_value(
+                target_db, "node__to_unit", "minimum_operating_point",
+                alt, (in_node, unit_name), min_op,
+            )
+        except RuntimeError:
+            pass
+
+    # Compute incremental flow ratios for each segment
+    incremental_ratios = []
+    for i in range(len(operating_points)):
+        if i == 0:
+            incremental_ratios.append(efficiencies[0])
+        else:
+            delta_op = operating_points[i] - operating_points[i - 1]
+            if delta_op > 0:
+                incremental = (
+                    operating_points[i] * efficiencies[i]
+                    - operating_points[i - 1] * efficiencies[i - 1]
+                ) / delta_op
+            else:
+                incremental = efficiencies[i]
+            incremental_ratios.append(incremental)
+
+    ratio_array = {"type": "array", "data": incremental_ratios}
+
+    for out_node in unit_outputs:
+        for in_node in unit_inputs:
+            if out_node == in_node:
+                continue
+            uf_byname = (unit_name, out_node, in_node, unit_name)
+            try:
+                add_entity(target_db, "unit_flow__unit_flow", uf_byname)
+            except RuntimeError:
+                pass
+            existing_param = target_db.get_parameter_value_item(
+                entity_class_name="unit_flow__unit_flow",
+                entity_byname=uf_byname,
+                parameter_definition_name="constraint_equality_flow_ratio",
+                alternative_name=alt,
+            )
+            if not existing_param:
+                add_parameter_value(
+                    target_db, "unit_flow__unit_flow",
+                    "constraint_equality_flow_ratio", alt, uf_byname, ratio_array,
+                )
+
+
 def process_conversion_coefficients(source_db, target_db):
     """Convert INES conversion_coefficients to SpineOpt constraint_equality_flow_ratio on unit_flow__unit_flow."""
 
+    # Collect units that have efficiency defined (those are handled by process_efficiency)
+    units_with_efficiency = set()
+    for eff_param in source_db.get_parameter_value_items(
+        entity_class_name="unit", parameter_definition_name="efficiency"
+    ):
+        method_item = source_db.get_parameter_value_item(
+            entity_class_name="unit",
+            entity_byname=eff_param["entity_byname"],
+            parameter_definition_name="conversion_method",
+            alternative_name="Base",
+        )
+        conversion_method = method_item["parsed_value"] if method_item else "constant_efficiency"
+        if conversion_method not in ("coefficients_only", "piecewise_linear_for_each_flow"):
+            units_with_efficiency.add(eff_param["entity_byname"][0])
+
     for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
         unit_name = unit_entity["name"]
+
+        # Skip units where efficiency already set the flow ratios
+        if unit_name in units_with_efficiency:
+            continue
 
         # Find output nodes (unit__to_node in both INES and SpineOpt)
         unit_outputs = [
@@ -2098,99 +2527,6 @@ def process_constraints(source_db, target_db):
         target_db.commit_session("Added user constraints")
     except:
         print("commit user constraints error")
-
-
-def process_co2_price(source_db, target_db):
-    """Map INES set co2_price to SpineOpt tax_in_unit_flow on the atmosphere node."""
-
-    # Check if atmosphere node exists (created by process_emissions)
-    atmosphere = target_db.get_entity_item(
-        entity_class_name="node", entity_byname=("atmosphere",)
-    )
-    if not atmosphere:
-        return
-
-    for param in source_db.get_parameter_value_items(
-        entity_class_name="set", parameter_definition_name="co2_price"
-    ):
-        if param["type"] == "map":
-            # Period-indexed map: convert to time series
-            starttime = {}
-            year_repr = {}
-            for period in json.loads(
-                source_db.get_parameter_value_items(
-                    entity_class_name="solve_pattern",
-                    parameter_definition_name="period",
-                )[0]["value"]
-            )["data"]:
-                starttime[period] = json.loads(
-                    source_db.get_parameter_value_item(
-                        entity_class_name="period",
-                        entity_byname=(period,),
-                        alternative_name="Base",
-                        parameter_definition_name="start_time",
-                    )["value"]
-                )["data"]
-                year_repr[period] = source_db.get_parameter_value_item(
-                    entity_class_name="period",
-                    entity_byname=(period,),
-                    alternative_name="Base",
-                    parameter_definition_name="years_represented",
-                )["parsed_value"]
-
-            map_table = convert_map_to_table(param["parsed_value"])
-            index_names = nested_index_names(param["parsed_value"])
-            data = pd.DataFrame(
-                map_table, columns=index_names + ["value"]
-            ).set_index(index_names[0])
-            data.index = data.index.astype("string")
-
-            if any(i in data.index for i in starttime):
-                indexes_ = []
-                values_ = []
-                for period_, ts_index_ in starttime.items():
-                    values_.append(
-                        float(data.at[period_, "value"])
-                        if period_ in data.index
-                        else 0.0
-                    )
-                    indexes_.append(ts_index_)
-                values_.append(values_[-1])
-                indexes_.append(
-                    (
-                        pd.Timestamp(ts_index_).replace(
-                            year=int(
-                                pd.Timestamp(ts_index_).year + year_repr[period_]
-                            )
-                        )
-                    ).isoformat()
-                )
-                ts_to_export = {
-                    "type": "time_series",
-                    "data": dict(zip(indexes_, values_)),
-                }
-                add_parameter_value(
-                    target_db,
-                    "node",
-                    "tax_in_unit_flow",
-                    param["alternative_name"],
-                    ("atmosphere",),
-                    ts_to_export,
-                )
-        elif param["type"] == "float":
-            add_parameter_value(
-                target_db,
-                "node",
-                "tax_in_unit_flow",
-                param["alternative_name"],
-                ("atmosphere",),
-                param["parsed_value"],
-            )
-
-    try:
-        target_db.commit_session("Added CO2 price")
-    except:
-        print("commit CO2 price error")
 
 
 def process_system_discount_rate(source_db, target_db):
