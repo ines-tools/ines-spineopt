@@ -650,7 +650,9 @@ def lifetime_to_duration(source_db,target_db,settings):
                 for param_map in source_db.get_parameter_value_items(entity_class_name = source_class, parameter_definition_name = source_param):
                     if param_map["type"] == "float":
                         param_value = {"type":"duration","data":str(int(param_map["parsed_value"]))+"Y"}
-                    
+                    elif param_map["type"] == "map":
+                        param_value = {"type":"duration","data":str(int(param_map["parsed_value"].values[0]))+"Y"}
+                        
                     for target_param in settings[source_class][target_class][source_param]:
                         print(target_param, param_map["entity_byname"])
                         add_parameter_value(target_db,target_class,target_param,param_map["alternative_name"],param_map["entity_byname"],param_value)
