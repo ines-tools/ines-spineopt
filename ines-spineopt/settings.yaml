@@ -8,15 +8,10 @@ default_parameters:
     # use_economic_representation: True
 
 map_of_periods_or_historical_to_ts:
-  unit:
-    unit:
-      availability: [availability_factor, 1.0,[[1]]]
-      units_fix_cumulative: [investment_count_fix_cumulative, 1.0, [[1]]]
-      units_max_cumulative: [investment_count_max_cumulative, 1.0, [[1]]]
   unit__to_node:
     unit:
-      profile_limit_upper: [availability_factor, 1.0,[[1]]]
       investment_cost: [unit_investment_cost, 1.0, [[1]]]
+      salvage_value: [unit_decommissioning_cost, -1.0, [[1]]]
       fixed_cost: 
         target: [fom_cost, 1.0,[[1]]]
         operation: divide
@@ -38,7 +33,6 @@ map_of_periods_or_historical_to_ts:
   link: 
     connection:
       investment_cost: [connection_investment_cost,1.0,[[1]]]
-      links_max_cumulative: [investment_count_max_cumulative,1.0,[[1]]]
       availability: [availability_factor,1.0,[[1]]]
   node__link__node: 
     connection__from_node:
@@ -51,9 +45,8 @@ map_of_periods_or_historical_to_ts:
       flow_annual: [demand_fraction,1.0,[[1]]]
       storage_state_lower_limit: [storage_state_min_fraction, 1.0,[[1]]]
       storage_state_upper_limit: [storage_state_max_fraction, 1.0,[[1]]]
-      storages_fix_cumulative: [storage_investment_count_fix_cumulative,1.0,[[1]]]
-      storages_max_cumulative: [storage_investment_count_max_cumulative,1.0,[[1]]]
       storage_investment_cost: [storage_investment_cost,1.0,[[1]]]
+      storage_salvage_value: [storage_decommissioning_cost,-1.0,[[1]]]
       storage_fixed_cost: 
         target: [storage_fixed_annual_cost, 1.0,[[1]]]
         operation: divide

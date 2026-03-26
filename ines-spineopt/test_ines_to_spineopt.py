@@ -46,9 +46,13 @@ def populate_source_db():
     """Populate the source INES database with test data covering all transformed parameters."""
     with DatabaseMapping(SOURCE_URL) as db:
         db.add_alternative_item(name="Base")
+        db.add_alternative_item(name="cumul_alt")
         db.add_scenario_item(name="base")
         db.add_scenario_alternative_item(
             scenario_name="base", alternative_name="Base", rank=1
+        )
+        db.add_scenario_alternative_item(
+            scenario_name="base", alternative_name="cumul_alt", rank=2
         )
         db.commit_session("Added alternatives and scenarios")
 
@@ -94,6 +98,10 @@ def populate_source_db():
         add_ent("set", ("co2_set",))
         add_ent("set", ("invest_group",))
         add_ent("set__unit", ("invest_group", "invest_unit"))
+        # flow_max_instant / flow_min_instant test entities
+        add_ent("set", ("max_flow_group",))
+        add_ent("set__unit_flow", ("max_flow_group", "gas_plant", "elec_node"))
+        add_ent("set__unit_flow", ("max_flow_group", "gas_node", "gas_plant"))
         # Efficiency test entities
         add_ent("unit", ("eff_unit",))
         add_ent("node", ("fuel_node",))
@@ -106,6 +114,10 @@ def populate_source_db():
             "unit_flow__unit_flow",
             ("gas_node", "gas_plant", "gas_plant", "elec_node"),
         )
+        # Reserve test entities
+        add_ent("reserve", ("up_reserve",))
+        add_ent("node__reserve", ("elec_node", "up_reserve"))
+        add_ent("unit__node__reserve", ("gas_plant", "elec_node", "up_reserve"))
         db.commit_session("Added entities")
 
         # === SOLVE PATTERN / PERIOD PARAMETERS ===
@@ -128,6 +140,7 @@ def populate_source_db():
         add_val("unit__to_node", "capacity", ("gas_plant", "elec_node"), 400.0)
         add_val("unit__to_node", "ramp_limit_up", ("gas_plant", "elec_node"), 0.4)
         add_val("unit__to_node", "ramp_limit_down", ("gas_plant", "elec_node"), 0.25)
+        add_val("unit__to_node", "flow_min_cumulative", ("gas_plant", "elec_node"), 500.0)
         add_val("unit", "startup_cost", ("gas_plant",), 5000.0)
         add_val("unit", "shutdown_cost", ("gas_plant",), 1000.0)
         add_val("unit", "online_cost", ("gas_plant",), 50.0)
@@ -147,14 +160,19 @@ def populate_source_db():
         add_val("node", "node_type", ("storage_node",), "storage")
         add_val("node", "storage_investment_method", ("storage_node",), "no_limits")
         add_val("unit", "investment_method", ("invest_unit",), "no_limits")
+        add_val("unit", "investment_uses_integer", ("invest_unit",), True)
         add_val("unit", "startup_method", ("gas_plant",), "integer")
         add_val("link", "investment_method", ("power_line",), "no_limits")
+        add_val("link", "investment_uses_integer", ("power_line",), True)
+        add_val("node", "storage_investment_uses_integer", ("storage_node",), True)
         add_val("link", "transfer_method", ("power_line",), "regular_linear")
         add_val("constraint", "sense", ("co2_limit",), "less_than")
 
         # === map_of_periods_or_historical_to_ts (float) ===
         add_val("unit", "availability", ("gas_plant",), 0.95)
+        add_val("unit__to_node", "profile_limit_upper", ("gas_plant", "elec_node"), 0.9)
         add_val("unit__to_node", "investment_cost", ("gas_plant", "elec_node"), 100000.0)
+        add_val("unit__to_node", "salvage_value", ("gas_plant", "elec_node"), 5000.0)
         add_val("unit__to_node", "fixed_cost", ("gas_plant", "elec_node"), 50000.0)
         add_val("node__to_unit", "fixed_cost", ("elec_node", "wind_farm"), 30000.0)
         add_val("link", "investment_cost", ("power_line",), 200000.0)
@@ -164,6 +182,7 @@ def populate_source_db():
         add_val("node__link__node", "operational_cost", ("elec_node", "power_line", "gas_node"), 2.5)
         add_val("node", "commodity_price", ("gas_node",), 25.0)
         add_val("node", "storage_investment_cost", ("storage_node",), 50000.0)
+        add_val("node", "storage_salvage_value", ("storage_node",), 3000.0)
         add_val("node", "storage_fixed_cost", ("storage_node",), 10000.0)
 
         # === map_of_periods_or_historical_to_ts (map) ===
@@ -209,11 +228,29 @@ def populate_source_db():
 
         # === set_to_entities_and_parameters ===
         add_val("set", "max_cumulative", ("invest_group",), 5.0)
+        add_ent("set", ("invest_cap_group",))
+        add_ent("set__unit", ("invest_cap_group", "gas_plant"))
+        add_val("set", "invest_max_total", ("invest_cap_group",), 1000.0)
+
+        # === flow_max_instant ===
+        add_val("set", "flow_max_instant", ("max_flow_group",), 500.0)
 
         # === existing_capacity ===
         add_val("unit", "units_existing", ("gas_plant",), 2.0)
         add_val("link", "links_existing", ("power_line",), 1.0)
         add_val("node", "storages_existing", ("storage_node",), 1.0)
+
+        # === process_invest_period (period path, Base alt) ===
+        invest_period_map = {"type": "map", "index_type": "str", "data": {"p2025": 3.0, "p2030": 5.0}}
+        add_val("unit", "units_invest_max_period", ("gas_plant",), invest_period_map)
+        add_val("link", "links_invest_max_period", ("power_line",), invest_period_map)
+        add_val("node", "storages_invest_fix_period", ("storage_node",), invest_period_map)
+
+        # === process_invest_period (cumulative path, cumul_alt) ===
+        cumul_map = {"type": "map", "index_type": "str", "data": {"p2025": 5.0, "p2030": 7.0}}
+        add_val("unit", "units_max_cumulative", ("gas_plant",), cumul_map, alt="cumul_alt")
+        add_val("link", "links_fix_cumulative", ("power_line",), cumul_map, alt="cumul_alt")
+        add_val("node", "storages_max_cumulative", ("storage_node",), cumul_map, alt="cumul_alt")
 
         # === lifetime_to_duration ===
         add_val("unit", "lifetime", ("gas_plant",), 30.0)
@@ -246,6 +283,13 @@ def populate_source_db():
         add_val("node", "constraint_storage_count_coefficient", ("storage_node",), constraint_coeff_map)
         add_val("node", "constraint_storage_state_coefficient", ("storage_node",), constraint_coeff_map)
         add_val("link", "constraint_link_count_coefficient", ("power_line",), constraint_coeff_map)
+        add_val("node__link__node", "constraint_flow_coefficient", ("elec_node", "power_line", "gas_node"), constraint_coeff_map)
+
+        # === process_reserves ===
+        add_val("reserve", "reserve_type", ("up_reserve",), "upward")
+        add_val("node__reserve", "reserve_requirement", ("elec_node", "up_reserve"), 20.0)
+        add_val("unit__node__reserve", "reservation_cost", ("gas_plant", "elec_node", "up_reserve"), 5.0)
+        add_val("unit__node__reserve", "max_reserve_provision", ("gas_plant", "elec_node", "up_reserve"), 0.5)
 
         db.commit_session("Added all test parameter values")
         print("Source database populated successfully.")
@@ -279,6 +323,7 @@ def verify_results():
         ("unit__to_node", "capacity_per_unit", ("gas_plant", "elec_node"), "capacity via YAML"),
         ("unit__to_node", "ramp_limits_up", ("gas_plant", "elec_node"), "ramp_limit_up via YAML"),
         ("unit__to_node", "ramp_limits_down", ("gas_plant", "elec_node"), "ramp_limit_down via YAML"),
+        ("unit__to_node", "flow_limits_min_cumulative", ("gas_plant", "elec_node"), "flow_min_cumulative via YAML"),
         ("unit", "start_up_cost", ("gas_plant",), "startup_cost via YAML"),
         ("unit", "shut_down_cost", ("gas_plant",), "shutdown_cost via YAML"),
         ("unit", "units_on_cost", ("gas_plant",), "online_cost via YAML"),
@@ -310,9 +355,8 @@ def verify_results():
         ("temporal_block", "resolution", None, "timeline resolution"),
 
         # === From map_of_periods_or_historical_to_ts ===
-        ("unit", "availability_factor", ("gas_plant",), "availability float"),
-        ("unit", "availability_factor", ("wind_farm",), "availability map"),
         ("unit", "unit_investment_cost", ("gas_plant",), "investment_cost"),
+        ("unit", "unit_decommissioning_cost", ("gas_plant",), "salvage_value * -1"),
         ("unit", "fom_cost", ("gas_plant",), "fom_cost from unit__to_node"),
         ("unit", "fom_cost", ("wind_farm",), "fom_cost from node__to_unit"),
         ("connection", "connection_investment_cost", ("power_line",), "link inv_cost"),
@@ -322,6 +366,7 @@ def verify_results():
         ("connection__node__node", "fix_ratio_out_in_connection_flow", None, "link efficiency"),
         ("node", "tax_out_unit_flow", ("gas_node",), "commodity_price"),
         ("node", "storage_investment_cost", ("storage_node",), "storage_inv_cost"),
+        ("node", "storage_decommissioning_cost", ("storage_node",), "storage_salvage * -1"),
         ("node", "storage_fixed_annual_cost", ("storage_node",), "storage_fixed_cost"),
         ("node", "demand_fraction", ("elec_node",), "flow_annual"),
         ("unit__to_node", "vom_cost", ("wind_farm", "elec_node"), "other_op_cost"),
@@ -329,10 +374,29 @@ def verify_results():
         # === From flow_profile_method ===
         ("node", "demand", ("elec_node",), "flow_profile"),
 
-        # === From default_parameters ===
+        # === From process_availability ===
+        ("unit", "availability_factor", ("gas_plant",), "avail * profile_limit_upper"),
+        ("unit", "availability_factor", ("wind_farm",), "availability map only"),
+
+        # === From default_parameters (overridden by process_investment_integer) ===
         ("unit", "investment_variable_type", None, "default unit inv_var_type"),
         ("connection", "investment_variable_type", None, "default conn inv_var_type"),
         ("model", "discount_rate", None, "default model discount_rate"),
+
+        # === From process_investment_integer ===
+        ("unit", "investment_variable_type", ("invest_unit",), "unit integer investment"),
+        ("connection", "investment_variable_type", ("power_line",), "conn integer investment"),
+        ("node", "storage_investment_variable_type", ("storage_node",), "node integer storage investment"),
+
+        # === From process_invest_period (period path, Base) ===
+        ("unit", "investment_count_max_cumulative", ("gas_plant",), "unit invest_max_period"),
+        ("connection", "investment_count_max_cumulative", ("power_line",), "link invest_max_period"),
+        ("node", "storage_investment_count_fix_cumulative", ("storage_node",), "storage invest_fix_period"),
+
+        # === From process_invest_period (cumulative path, cumul_alt) ===
+        ("unit", "investment_count_max_cumulative", ("gas_plant",), "unit cumul max_cumulative"),
+        ("connection", "investment_count_fix_cumulative", ("power_line",), "link cumul fix_cumulative"),
+        ("node", "storage_investment_count_max_cumulative", ("storage_node",), "storage cumul max_cumulative"),
 
         # === From candidates_to_number_of ===
         ("unit", "existing_units", ("invest_unit",), "candidate existing=0"),
@@ -401,6 +465,15 @@ def verify_results():
 
         # === From set_to_entities_and_parameters ===
         ("investment_group", "investment_count_total_max_cumulative", ("invest_group",), "max_cumulative"),
+        ("investment_group", "investment_capacity_total_max_cumulative", ("invest_cap_group",), "invest_max_total"),
+
+        # === From flow_max_instant ===
+        ("user_constraint", "right_hand_side", ("max_flow_group",), "flow_max_instant rhs"),
+        ("user_constraint", "constraint_sense", ("max_flow_group",), "flow_max_instant sense"),
+        ("unit_flow__user_constraint", "coefficient_for_unit_flow",
+         ("gas_plant", "elec_node", "max_flow_group"), "flow_max_instant unit__to_node member"),
+        ("unit_flow__user_constraint", "coefficient_for_unit_flow",
+         ("gas_node", "gas_plant", "max_flow_group"), "flow_max_instant node__to_unit member"),
 
         # === From process_constraints ===
         ("unit_flow__user_constraint", "coefficient_for_unit_flow",
@@ -417,6 +490,19 @@ def verify_results():
          ("storage_node", "co2_limit"), "constraint storage state"),
         ("connection__user_constraint", "coefficient_for_connections_invested_available",
          ("power_line", "co2_limit"), "constraint link count"),
+        ("connection__to_node__user_constraint", "coefficient_for_connection_flow",
+         ("power_line", "gas_node", "co2_limit"), "constraint link flow"),
+
+        # === From process_reserves ===
+        ("node", "reserve_active", ("up_reserve",), "reserve_active flag"),
+        ("node", "reserve_upward", ("up_reserve",), "reserve_upward flag"),
+        ("node", "balance_sense", ("up_reserve",), "reserve balance_sense"),
+        ("node", "balance_type", ("up_reserve",), "reserve balance_type"),
+        ("node", "demand", ("up_reserve",), "reserve demand from requirement"),
+        ("unit__to_node", "reserve_procurement_cost",
+         ("gas_plant", "up_reserve"), "reserve procurement cost"),
+        ("unit__to_node", "capacity_per_unit",
+         ("gas_plant", "up_reserve"), "reserve capacity from max_provision * capacity"),
     ]
 
     found = []

@@ -237,6 +237,9 @@ def main():
             ## flow profiles addition
             flow_profile_method(source_db, target_db)
 
+            ## availability and profile_limit_upper
+            process_availability(source_db, target_db)
+
             ## investments not allowed
             limiting_investments_notallowed(source_db, target_db)
 
@@ -257,6 +260,9 @@ def main():
             # existing capacity
             existing_capacity(source_db, target_db)
 
+            # per-period investment limits to cumulative (add existing)
+            process_invest_period(source_db, target_db)
+
             # lifetime to duration
             lifetime_to_duration(source_db, target_db, settings["lifetime_to_duration"])
 
@@ -272,8 +278,432 @@ def main():
             # user constraints from INES constraint coefficients
             process_constraints(source_db, target_db)
 
+            # investment_uses_integer to investment_variable_type
+            process_investment_integer(source_db, target_db)
+
             # system discount rate
             process_system_discount_rate(source_db, target_db)
+
+            # reserves
+            process_reserves(source_db, target_db)
+
+
+def process_reserves(source_db, target_db):
+    """Map INES reserve entities and parameters to SpineOpt node-based reserves."""
+
+    # 1. Create a node for each INES reserve entity, set reserve flags based on reserve_type
+    for reserve_ent in source_db.get_entity_items(entity_class_name="reserve"):
+        reserve_name = reserve_ent["entity_byname"][0]
+        try:
+            add_entity(target_db, "node", (reserve_name,))
+        except RuntimeError:
+            pass
+
+    # Set reserve flags from reserve_type
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="reserve", parameter_definition_name="reserve_type"
+    ):
+        reserve_name = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        rtype = pv["parsed_value"]
+
+        add_parameter_value(target_db, "node", "reserve_active", alt, (reserve_name,), True)
+        add_parameter_value(target_db, "node", "balance_sense", alt, (reserve_name,), ">=")
+        add_parameter_value(target_db, "node", "balance_type", alt, (reserve_name,), "none")
+
+        if rtype == "upward":
+            add_parameter_value(target_db, "node", "reserve_upward", alt, (reserve_name,), True)
+        elif rtype == "downward":
+            add_parameter_value(target_db, "node", "reserve_downward", alt, (reserve_name,), True)
+        elif rtype == "symmetric":
+            add_parameter_value(target_db, "node", "reserve_upward", alt, (reserve_name,), True)
+            add_parameter_value(target_db, "node", "reserve_downward", alt, (reserve_name,), True)
+
+    # 2. node__reserve.reserve_requirement → node.demand on the reserve node
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node__reserve", parameter_definition_name="reserve_requirement"
+    ):
+        reserve_name = pv["entity_byname"][1]
+        alt = pv["alternative_name"]
+        add_parameter_value(
+            target_db, "node", "demand", alt, (reserve_name,), pv["parsed_value"]
+        )
+
+    # 3. unit__node__reserve → unit__to_node(unit, reserve) relationships and parameters
+    for ent in source_db.get_entity_items(entity_class_name="unit__node__reserve"):
+        unit_name = ent["entity_byname"][0]
+        reserve_name = ent["entity_byname"][2]
+        try:
+            add_entity(target_db, "unit__to_node", (unit_name, reserve_name))
+        except RuntimeError:
+            pass
+
+    # unit__node__reserve.reservation_cost → unit__to_node.reserve_procurement_cost
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="unit__node__reserve", parameter_definition_name="reservation_cost"
+    ):
+        unit_name = pv["entity_byname"][0]
+        reserve_name = pv["entity_byname"][2]
+        alt = pv["alternative_name"]
+        add_parameter_value(
+            target_db, "unit__to_node", "reserve_procurement_cost",
+            alt, (unit_name, reserve_name), pv["parsed_value"],
+        )
+
+    # unit__node__reserve.max_reserve_provision × capacity → unit__to_node.capacity_per_unit
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="unit__node__reserve",
+        parameter_definition_name="max_reserve_provision",
+    ):
+        unit_name = pv["entity_byname"][0]
+        node_name = pv["entity_byname"][1]
+        reserve_name = pv["entity_byname"][2]
+        alt = pv["alternative_name"]
+        share = pv["parsed_value"]
+        # Look up the unit's capacity on the original node
+        capacity_val = None
+        for cap_class in ["unit__to_node", "node__to_unit"]:
+            for cap in source_db.get_parameter_value_items(
+                entity_class_name=cap_class, parameter_definition_name="capacity"
+            ):
+                cap_byname = cap["entity_byname"]
+                if cap_class == "unit__to_node" and cap_byname == (unit_name, node_name):
+                    capacity_val = cap["parsed_value"]
+                    break
+                elif cap_class == "node__to_unit" and cap_byname == (node_name, unit_name):
+                    capacity_val = cap["parsed_value"]
+                    break
+            if capacity_val is not None:
+                break
+        if capacity_val is not None:
+            reserve_capacity = share * capacity_val
+            add_parameter_value(
+                target_db, "unit__to_node", "capacity_per_unit",
+                alt, (unit_name, reserve_name), reserve_capacity,
+            )
+
+    # 4. link__node__reserve → connection__to_node(link, reserve) relationships and parameters
+    for ent in source_db.get_entity_items(entity_class_name="link__node__reserve"):
+        link_name = ent["entity_byname"][0]
+        reserve_name = ent["entity_byname"][2]
+        try:
+            add_entity(target_db, "connection__to_node", (link_name, reserve_name))
+        except RuntimeError:
+            pass
+
+    # link__node__reserve.reservation_cost → connection__to_node.reserve_procurement_cost
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="link__node__reserve", parameter_definition_name="reservation_cost"
+    ):
+        link_name = pv["entity_byname"][0]
+        reserve_name = pv["entity_byname"][2]
+        alt = pv["alternative_name"]
+        add_parameter_value(
+            target_db, "connection__to_node", "reserve_procurement_cost",
+            alt, (link_name, reserve_name), pv["parsed_value"],
+        )
+
+    try:
+        target_db.commit_session("Added reserves")
+    except:
+        print("commit reserves error")
+
+
+def process_investment_integer(source_db, target_db):
+    """Map INES investment_uses_integer (boolean) to SpineOpt investment_variable_type ('integer')."""
+    mappings = [
+        ("unit", "investment_uses_integer", "unit", "investment_variable_type"),
+        ("link", "investment_uses_integer", "connection", "investment_variable_type"),
+        ("node", "storage_investment_uses_integer", "node", "storage_investment_variable_type"),
+    ]
+    for source_class, source_param, target_class, target_param in mappings:
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name=source_class,
+            parameter_definition_name=source_param,
+        ):
+            if pv["parsed_value"]:
+                db_val, val_type = api.to_database("integer")
+                target_db.update_parameter_value_item(
+                    entity_class_name=target_class,
+                    entity_byname=pv["entity_byname"],
+                    parameter_definition_name=target_param,
+                    alternative_name=pv["alternative_name"],
+                    value=db_val,
+                    type=val_type,
+                )
+    try:
+        target_db.commit_session("Added integer investment variable types")
+    except:
+        print("commit integer investment variable types error")
+
+
+def process_availability(source_db, target_db):
+    """Combine INES unit.availability and profile_limit_upper into SpineOpt unit.availability_factor.
+
+    If both unit.availability and profile_limit_upper exist for the same unit,
+    the result is their product. profile_limit_upper can come from unit__to_node or node__to_unit.
+    """
+    periods_info = _get_periods_info(source_db)
+
+    # Collect availability per (unit_name, alternative)
+    availability = {}  # {(unit_name, alt): value}
+
+    # 1. Unit-level availability
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="unit", parameter_definition_name="availability"
+    ):
+        unit_name = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        if pv["type"] == "float":
+            availability[(unit_name, alt)] = pv["parsed_value"]
+        elif pv["type"] == "map":
+            ts = _map_to_time_series(pv["parsed_value"], periods_info)
+            if ts:
+                availability[(unit_name, alt)] = ts
+
+    # 2. profile_limit_upper from unit__to_node and node__to_unit
+    profile = {}  # {(unit_name, alt): value}
+    for flow_class in ["unit__to_node", "node__to_unit"]:
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name=flow_class,
+            parameter_definition_name="profile_limit_upper",
+        ):
+            if flow_class == "unit__to_node":
+                unit_name = pv["entity_byname"][0]
+            else:
+                unit_name = pv["entity_byname"][1]
+            alt = pv["alternative_name"]
+            if (unit_name, alt) in profile:
+                continue  # first flow wins
+            if pv["type"] == "float":
+                profile[(unit_name, alt)] = pv["parsed_value"]
+            elif pv["type"] == "map":
+                ts = _map_to_time_series(pv["parsed_value"], periods_info)
+                if ts:
+                    profile[(unit_name, alt)] = ts
+
+    # 3. Combine: multiply if both present
+    all_keys = set(list(availability.keys()) + list(profile.keys()))
+    for (unit_name, alt) in all_keys:
+        avail = availability.get((unit_name, alt))
+        prof = profile.get((unit_name, alt))
+
+        if avail is not None and prof is not None:
+            value = _multiply_values(avail, prof)
+        elif avail is not None:
+            value = avail
+        else:
+            value = prof
+
+        if value is not None:
+            try:
+                add_parameter_value(
+                    target_db, "unit", "availability_factor",
+                    alt, (unit_name,), value,
+                )
+            except RuntimeError:
+                db_val, val_type = api.to_database(value)
+                target_db.update_parameter_value_item(
+                    entity_class_name="unit",
+                    entity_byname=(unit_name,),
+                    parameter_definition_name="availability_factor",
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
+
+    try:
+        target_db.commit_session("Added availability")
+    except:
+        print("commit availability error")
+
+
+def _multiply_values(a, b):
+    """Multiply two parameter values that may be floats or time_series dicts."""
+    a_is_ts = isinstance(a, dict) and a.get("type") == "time_series"
+    b_is_ts = isinstance(b, dict) and b.get("type") == "time_series"
+
+    if not a_is_ts and not b_is_ts:
+        return a * b
+
+    if a_is_ts and not b_is_ts:
+        return {
+            "type": "time_series",
+            "data": {k: v * b for k, v in a["data"].items()},
+        }
+
+    if not a_is_ts and b_is_ts:
+        return {
+            "type": "time_series",
+            "data": {k: v * a for k, v in b["data"].items()},
+        }
+
+    # Both are time_series - multiply matching timestamps
+    merged_data = {}
+    all_keys = list(dict.fromkeys(list(a["data"].keys()) + list(b["data"].keys())))
+    a_data = a["data"]
+    b_data = b["data"]
+    last_a = None
+    last_b = None
+    for k in all_keys:
+        val_a = a_data.get(k, last_a)
+        val_b = b_data.get(k, last_b)
+        if val_a is not None and val_b is not None:
+            merged_data[k] = val_a * val_b
+        if k in a_data:
+            last_a = a_data[k]
+        if k in b_data:
+            last_b = b_data[k]
+    return {"type": "time_series", "data": merged_data}
+
+
+def process_invest_period(source_db, target_db):
+    """Transform investment limit params to SpineOpt cumulative params.
+
+    Handles both cumulative params (direct copy) and per-period params (add existing capacity).
+    """
+    periods_info = _get_periods_info(source_db)
+
+    mappings = [
+        {
+            "source_class": "unit",
+            "target_class": "unit",
+            "existing_param": "units_existing",
+            "cumulative": [
+                ("units_fix_cumulative", "investment_count_fix_cumulative"),
+                ("units_max_cumulative", "investment_count_max_cumulative"),
+            ],
+            "period": [
+                ("units_invest_fix_period", "investment_count_fix_cumulative"),
+                ("units_invest_max_period", "investment_count_max_cumulative"),
+            ],
+        },
+        {
+            "source_class": "link",
+            "target_class": "connection",
+            "existing_param": "links_existing",
+            "cumulative": [
+                ("links_fix_cumulative", "investment_count_fix_cumulative"),
+                ("links_max_cumulative", "investment_count_max_cumulative"),
+            ],
+            "period": [
+                ("links_invest_fix_period", "investment_count_fix_cumulative"),
+                ("links_invest_max_period", "investment_count_max_cumulative"),
+            ],
+        },
+        {
+            "source_class": "node",
+            "target_class": "node",
+            "existing_param": "storages_existing",
+            "cumulative": [
+                ("storages_fix_cumulative", "storage_investment_count_fix_cumulative"),
+                ("storages_max_cumulative", "storage_investment_count_max_cumulative"),
+            ],
+            "period": [
+                ("storages_invest_fix_period", "storage_investment_count_fix_cumulative"),
+                ("storages_invest_max_period", "storage_investment_count_max_cumulative"),
+            ],
+        },
+    ]
+
+    for mapping in mappings:
+        source_class = mapping["source_class"]
+        target_class = mapping["target_class"]
+        existing_param = mapping["existing_param"]
+
+        # Cumulative params: direct copy (already include existing)
+        for source_param, target_param in mapping["cumulative"]:
+            for pv in source_db.get_parameter_value_items(
+                entity_class_name=source_class,
+                parameter_definition_name=source_param,
+            ):
+                entity_byname = pv["entity_byname"]
+                alt = pv["alternative_name"]
+
+                if pv["type"] == "map":
+                    ts = _map_to_time_series(pv["parsed_value"], periods_info)
+                    if ts:
+                        value_to_set = ts
+                    else:
+                        continue
+                elif pv["type"] == "float":
+                    value_to_set = pv["parsed_value"]
+                else:
+                    continue
+
+                try:
+                    add_parameter_value(
+                        target_db, target_class, target_param, alt,
+                        entity_byname, value_to_set,
+                    )
+                except RuntimeError:
+                    db_val, val_type = api.to_database(value_to_set)
+                    target_db.update_parameter_value_item(
+                        entity_class_name=target_class,
+                        entity_byname=entity_byname,
+                        parameter_definition_name=target_param,
+                        alternative_name=alt,
+                        value=db_val,
+                        type=val_type,
+                    )
+
+        # Period params: add existing capacity to convert to cumulative
+        for source_param, target_param in mapping["period"]:
+            for pv in source_db.get_parameter_value_items(
+                entity_class_name=source_class,
+                parameter_definition_name=source_param,
+            ):
+                entity_byname = pv["entity_byname"]
+                alt = pv["alternative_name"]
+
+                # Get initial existing capacity
+                existing_item = source_db.get_parameter_value_item(
+                    entity_class_name=source_class,
+                    entity_byname=entity_byname,
+                    parameter_definition_name=existing_param,
+                    alternative_name="Base",
+                )
+                existing_count = 0.0
+                if existing_item:
+                    if existing_item["type"] == "float":
+                        existing_count = existing_item["parsed_value"]
+                    elif existing_item["type"] == "map":
+                        existing_count = float(existing_item["parsed_value"].values[0])
+
+                if pv["type"] == "map":
+                    ts = _map_to_time_series(pv["parsed_value"], periods_info)
+                    if ts:
+                        ts["data"] = {
+                            k: v + existing_count for k, v in ts["data"].items()
+                        }
+                        value_to_set = ts
+                    else:
+                        continue
+                elif pv["type"] == "float":
+                    value_to_set = existing_count + pv["parsed_value"]
+                else:
+                    continue
+
+                try:
+                    add_parameter_value(
+                        target_db, target_class, target_param, alt,
+                        entity_byname, value_to_set,
+                    )
+                except RuntimeError:
+                    db_val, val_type = api.to_database(value_to_set)
+                    target_db.update_parameter_value_item(
+                        entity_class_name=target_class,
+                        entity_byname=entity_byname,
+                        parameter_definition_name=target_param,
+                        alternative_name=alt,
+                        value=db_val,
+                        type=val_type,
+                    )
+
+    try:
+        target_db.commit_session("Added investment period limits")
+    except:
+        print("commit investment period limits error")
 
 
 def _get_periods_info(source_db):
@@ -1628,6 +2058,115 @@ def set_to_entities_and_parameters(source_db, target_db):
                             )
                 else:
                     pass
+
+    # invest_max_total and invest_max_period → investment_capacity_total_max_cumulative
+    periods_info = _get_periods_info(source_db)
+    for source_parameter in ["invest_max_total", "invest_max_period"]:
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name="set", parameter_definition_name=source_parameter
+        ):
+            set_name = pv["entity_byname"][0]
+            alt = pv["alternative_name"]
+
+            # Ensure investment_group entity and member relationships exist
+            try:
+                add_entity(target_db, "investment_group", (set_name,))
+            except RuntimeError:
+                pass
+            for relation, target_rel in [
+                ("set__unit", "unit__investment_group"),
+                ("set__node", "node__investment_group"),
+                ("set__link", "connection__investment_group"),
+            ]:
+                for elem in source_db.get_entity_items(entity_class_name=relation):
+                    if elem["entity_byname"][0] == set_name:
+                        try:
+                            add_entity(target_db, target_rel, (elem["entity_byname"][1], set_name))
+                        except RuntimeError:
+                            pass
+
+            if pv["type"] == "float":
+                value_to_set = pv["parsed_value"]
+            elif pv["type"] == "map":
+                ts = _map_to_time_series(pv["parsed_value"], periods_info)
+                if ts:
+                    value_to_set = ts
+                else:
+                    continue
+            else:
+                continue
+
+            try:
+                add_parameter_value(
+                    target_db, "investment_group",
+                    "investment_capacity_total_max_cumulative",
+                    alt, (set_name,), value_to_set,
+                )
+            except RuntimeError:
+                db_val, val_type = api.to_database(value_to_set)
+                target_db.update_parameter_value_item(
+                    entity_class_name="investment_group",
+                    entity_byname=(set_name,),
+                    parameter_definition_name="investment_capacity_total_max_cumulative",
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
+
+    # flow_max_instant / flow_min_instant → user_constraint with right_hand_side and constraint_sense
+    for source_parameter, sense in [("flow_max_instant", "<="), ("flow_min_instant", ">=")]:
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name="set", parameter_definition_name=source_parameter
+        ):
+            set_name = pv["entity_byname"][0]
+            alt = pv["alternative_name"]
+
+            # Create user_constraint entity
+            try:
+                add_entity(target_db, "user_constraint", (set_name,))
+            except RuntimeError:
+                pass
+
+            # Set right_hand_side
+            add_parameter_value(
+                target_db, "user_constraint", "right_hand_side",
+                alt, (set_name,), pv["parsed_value"],
+            )
+
+            # Set constraint_sense
+            try:
+                add_parameter_value(
+                    target_db, "user_constraint", "constraint_sense",
+                    alt, (set_name,), sense,
+                )
+            except RuntimeError:
+                pass
+
+            # Add set__unit_flow members as unit_flow__user_constraint
+            for member in source_db.get_entity_items(entity_class_name="set__unit_flow"):
+                if member["entity_byname"][0] != set_name:
+                    continue
+                flow_byname = member["entity_byname"][1:]
+                flow_class = source_db.get_entity_items(
+                    entity_byname=flow_byname
+                )[0]["entity_class_name"]
+                if flow_class == "node__to_unit":
+                    uf_uc_byname = (flow_byname[0], flow_byname[1], set_name)
+                else:
+                    uf_uc_byname = (flow_byname[0], flow_byname[1], set_name)
+                try:
+                    add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
+                except RuntimeError:
+                    pass
+                try:
+                    add_parameter_value(
+                        target_db, "unit_flow__user_constraint",
+                        "coefficient_for_unit_flow",
+                        alt, uf_uc_byname, 1.0,
+                    )
+                except RuntimeError:
+                    pass
+
     try:
         target_db.commit_session("Added set constraints")
     except:
@@ -2520,6 +3059,33 @@ def process_constraints(source_db, target_db):
                     "coefficient_for_connections_invested_available",
                     param["alternative_name"],
                     (link_name, constraint_name),
+                    float(val),
+                )
+
+    # Map constraint_flow_coefficient from node__link__node → connection__to_node__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="node__link__node",
+        parameter_definition_name="constraint_flow_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            node1, link_name, node2 = param["entity_byname"]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                try:
+                    add_entity(
+                        target_db,
+                        "connection__to_node__user_constraint",
+                        (link_name, node2, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "connection__to_node__user_constraint",
+                    "coefficient_for_connection_flow",
+                    param["alternative_name"],
+                    (link_name, node2, constraint_name),
                     float(val),
                 )
 

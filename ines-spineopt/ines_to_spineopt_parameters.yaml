@@ -8,6 +8,7 @@ unit__to_node:
     capacity: [capacity_per_unit, 1.0,[[1],[2]]]
     ramp_limit_up: [ramp_limits_up, 1.0, [[1],[2]]]
     ramp_limit_down: [ramp_limits_down, 1.0, [[1],[2]]]
+    flow_min_cumulative: [flow_limits_min_cumulative, 1.0, [[1],[2]]]
 unit:
   unit:
     startup_cost: start_up_cost
