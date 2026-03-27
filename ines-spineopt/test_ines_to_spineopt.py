@@ -131,6 +131,8 @@ def populate_source_db():
             "type": "array", "data": ["2025-01-01T00:00:00", "2025-06-01T00:00:00"],
         })
         add_val("solve_pattern", "time_resolution", ("sp1",), {"type": "duration", "data": "1h"})
+        add_val("solve_pattern", "rolling_jump", ("sp1",), {"type": "duration", "data": "168h"})
+        add_val("solve_pattern", "rolling_horizon", ("sp1",), {"type": "duration", "data": "336h"})
         add_val("period", "start_time", ("p2025",), {"type": "date_time", "data": "2025-01-01T00:00:00"})
         add_val("period", "years_represented", ("p2025",), 5.0)
         add_val("period", "start_time", ("p2030",), {"type": "date_time", "data": "2030-01-01T00:00:00"})
@@ -537,6 +539,11 @@ def verify_results():
         ("node", "tax_out_unit_flow", ("elec_node",), "commodity_price_forecasts scenario map"),
         ("unit__to_node", "vom_cost", ("gas_plant", "elec_node"), "operational_cost_forecasts scenario map"),
         ("node", "storage_state_fix", ("storage_node",), "storage_state_fix_forecasts ts scenario map"),
+
+        # === From rolling_jump / rolling_horizon ===
+        ("model", "roll_forward", ("sp1",), "rolling_jump to roll_forward"),
+        ("temporal_block", "block_end", ("operations_p2025",), "rolling_horizon to block_end"),
+        ("temporal_block", "block_end", ("operations_p2030",), "rolling_horizon to block_end p2030"),
     ]
 
     found = []

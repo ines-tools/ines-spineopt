@@ -1586,6 +1586,17 @@ def timeline_setup(source_db, target_db):
             entity_class_name="solve_pattern", parameter_definition_name="duration"
         )[0]["value"]
     )["data"]
+
+    # rolling optimization parameters (optional)
+    rolling_jump_items = source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern", parameter_definition_name="rolling_jump"
+    )
+    rolling_jump = json.loads(rolling_jump_items[0]["value"])["data"] if rolling_jump_items else None
+    rolling_horizon_items = source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern", parameter_definition_name="rolling_horizon"
+    )
+    rolling_horizon = json.loads(rolling_horizon_items[0]["value"])["data"] if rolling_horizon_items else None
+
     py_yearrs = []
     # if not multiyear
     if len(periods) == 1:
@@ -1665,6 +1676,15 @@ def timeline_setup(source_db, target_db):
                 (temporal_block_name,),
                 True,
             )
+            if rolling_horizon is not None:
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "block_end",
+                    "Base",
+                    (temporal_block_name,),
+                    {"type": "duration", "data": rolling_horizon},
+                )
 
     else:
         print("Multiyear investment planning")
@@ -1735,14 +1755,24 @@ def timeline_setup(source_db, target_db):
                 (temporal_block_name,),
                 {"type": "date_time", "data": block_start},
             )
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "block_end",
-                "Base",
-                (temporal_block_name,),
-                {"type": "date_time", "data": block_end},
-            )
+            if rolling_horizon is not None:
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "block_end",
+                    "Base",
+                    (temporal_block_name,),
+                    {"type": "duration", "data": rolling_horizon},
+                )
+            else:
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "block_end",
+                    "Base",
+                    (temporal_block_name,),
+                    {"type": "date_time", "data": block_end},
+                )
             add_parameter_value(
                 target_db,
                 "temporal_block",
@@ -1774,6 +1804,16 @@ def timeline_setup(source_db, target_db):
             {"type": "date_time", "data": max(py_ends).isoformat()},
         )
         # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
+
+    if rolling_jump is not None:
+        add_parameter_value(
+            target_db,
+            "model",
+            "roll_forward",
+            "Base",
+            (model_name,),
+            {"type": "duration", "data": rolling_jump},
+        )
 
     # investment_resolution # should not be created if there are only operational parameters in the database
     temporal_block_name = "planning"
