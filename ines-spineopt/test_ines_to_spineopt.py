@@ -118,6 +118,10 @@ def populate_source_db():
         add_ent("reserve", ("up_reserve",))
         add_ent("node__reserve", ("elec_node", "up_reserve"))
         add_ent("unit__node__reserve", ("gas_plant", "elec_node", "up_reserve"))
+        # Stochastic test entities
+        add_ent("set", ("stoch_set",))
+        add_ent("set__node", ("stoch_set", "elec_node"))
+        add_ent("set__unit", ("stoch_set", "gas_plant"))
         db.commit_session("Added entities")
 
         # === SOLVE PATTERN / PERIOD PARAMETERS ===
@@ -290,6 +294,25 @@ def populate_source_db():
         add_val("node__reserve", "reserve_requirement", ("elec_node", "up_reserve"), 20.0)
         add_val("unit__node__reserve", "reservation_cost", ("gas_plant", "elec_node", "up_reserve"), 5.0)
         add_val("unit__node__reserve", "max_reserve_provision", ("gas_plant", "elec_node", "up_reserve"), 0.5)
+
+        # === process_stochastic_structure ===
+        add_val("solve_pattern", "stochastic_scope", ("sp1",), "whole_model")
+        add_val("set", "stochastic_method", ("stoch_set",), "interpolate_time_series_forecasts")
+        forecast_weights = {"type": "map", "index_type": "str", "data": {"high": 0.3, "low": 0.7}}
+        add_val("set", "stochastic_forecast_weights", ("stoch_set",), forecast_weights)
+
+        # === process_forecasts ===
+        price_forecasts = {"type": "map", "index_type": "str", "data": {"high": 50.0, "low": 30.0}}
+        add_val("node", "commodity_price_forecasts", ("elec_node",), price_forecasts)
+        cost_forecasts = {"type": "map", "index_type": "str", "data": {"high": 10.0, "low": 5.0}}
+        add_val("unit__to_node", "other_operational_cost_forecasts", ("gas_plant", "elec_node"), cost_forecasts)
+        # time series forecast as 2D map (1st index: scenario name, 2nd index: datetime)
+        map_high = {"type": "map", "index_type": "date_time", "data": [
+            ["2025-01-01T00:00:00", 100.0], ["2025-01-01T01:00:00", 120.0]]}
+        map_low = {"type": "map", "index_type": "date_time", "data": [
+            ["2025-01-01T00:00:00", 80.0], ["2025-01-01T01:00:00", 90.0]]}
+        ts_forecasts = {"type": "map", "index_type": "str", "data": [["high", map_high], ["low", map_low]]}
+        add_val("node", "storage_state_fix_forecasts", ("storage_node",), ts_forecasts)
 
         db.commit_session("Added all test parameter values")
         print("Source database populated successfully.")
@@ -503,6 +526,17 @@ def verify_results():
          ("gas_plant", "up_reserve"), "reserve procurement cost"),
         ("unit__to_node", "capacity_per_unit",
          ("gas_plant", "up_reserve"), "reserve capacity from max_provision * capacity"),
+
+        # === From process_stochastic_structure ===
+        ("stochastic_structure__stochastic_scenario", "weight_relative_to_parents",
+         ("stoch_set", "high"), "stochastic weight high"),
+        ("stochastic_structure__stochastic_scenario", "weight_relative_to_parents",
+         ("stoch_set", "low"), "stochastic weight low"),
+
+        # === From process_forecasts ===
+        ("node", "tax_out_unit_flow", ("elec_node",), "commodity_price_forecasts scenario map"),
+        ("unit__to_node", "vom_cost", ("gas_plant", "elec_node"), "operational_cost_forecasts scenario map"),
+        ("node", "storage_state_fix", ("storage_node",), "storage_state_fix_forecasts ts scenario map"),
     ]
 
     found = []

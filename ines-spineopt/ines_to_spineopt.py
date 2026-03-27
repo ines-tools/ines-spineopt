@@ -287,6 +287,213 @@ def main():
             # reserves
             process_reserves(source_db, target_db)
 
+            # stochastic structure
+            process_stochastic_structure(source_db, target_db)
+
+            # forecast parameters → scenario-indexed Maps
+            process_forecasts(source_db, target_db)
+
+
+def process_forecasts(source_db, target_db):
+    """Transform INES _forecasts parameters to SpineOpt scenario-indexed Maps.
+
+    INES _forecasts parameters are Maps where 1st index = forecast/scenario name.
+    SpineOpt expects scenario-dependent data as Maps indexed by stochastic_scenario names.
+    """
+
+    # Mapping: (source_class, forecast_param) → (target_class, target_param, target_order, multiplier)
+    forecast_mappings = [
+        # unit__to_node forecasts
+        ("unit__to_node", "other_operational_cost_forecasts", "unit__to_node", "vom_cost", [[1], [2]], 1.0),
+        # node__to_unit forecasts
+        ("node__to_unit", "other_operational_cost_forecasts", "node__to_unit", "vom_cost", [[1], [2]], 1.0),
+        # node forecasts
+        ("node", "commodity_price_forecasts", "node", "tax_out_unit_flow", [[1]], 1.0),
+        ("node", "storage_state_fix_forecasts", "node", "storage_state_fix", [[1]], 1.0),
+        ("node", "storage_state_lower_limit_forecasts", "node", "storage_state_min_fraction", [[1]], 1.0),
+        ("node", "storage_state_upper_limit_forecasts", "node", "storage_state_max_fraction", [[1]], 1.0),
+        # node__link__node forecasts
+        ("node__link__node", "operational_cost_forecasts", "connection__from_node", "connection_flow_cost", [[2], [1]], 1.0),
+        ("node__link__node", "efficiency_forecasts", "connection__node__node", "fix_ratio_out_in_connection_flow", [[2], [3], [1]], 1.0),
+    ]
+
+    for src_class, src_param, tgt_class, tgt_param, tgt_order, multiplier in forecast_mappings:
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name=src_class, parameter_definition_name=src_param
+        ):
+            if pv["type"] != "map":
+                continue
+
+            alt = pv["alternative_name"]
+            parsed = pv["parsed_value"]
+
+            # Build target entity byname from source byname with reordering
+            target_names = tuple(
+                "__".join(pv["entity_byname"][int(i) - 1] for i in k)
+                for k in tgt_order
+            )
+
+            # Build scenario-indexed Map from the forecast data
+            # 1st index of the INES Map = forecast/scenario name
+            scenario_map = Map(
+                indexes=list(parsed.indexes),
+                values=[
+                    multiplier * v if isinstance(v, (int, float)) else v
+                    for v in parsed.values
+                ],
+                index_name="stochastic_scenario",
+            )
+
+            try:
+                add_parameter_value(
+                    target_db, tgt_class, tgt_param,
+                    alt, target_names, scenario_map,
+                )
+            except RuntimeError:
+                db_val, val_type = api.to_database(scenario_map)
+                target_db.update_parameter_value_item(
+                    entity_class_name=tgt_class,
+                    entity_byname=target_names,
+                    parameter_definition_name=tgt_param,
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
+
+    try:
+        target_db.commit_session("Added forecast parameters")
+    except:
+        print("commit forecast parameters error")
+
+
+def process_stochastic_structure(source_db, target_db):
+    """Map INES set stochastic parameters to SpineOpt stochastic_structure entities."""
+
+    # Check stochastic_scope on solve_pattern
+    stochastic_scope = "none"
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern", parameter_definition_name="stochastic_scope"
+    ):
+        stochastic_scope = pv["parsed_value"]
+
+    # Find all model entities (from solve_pattern → model mapping)
+    model_names = [
+        e["entity_byname"][0]
+        for e in target_db.get_entity_items(entity_class_name="model")
+    ]
+
+    for pv_method in source_db.get_parameter_value_items(
+        entity_class_name="set", parameter_definition_name="stochastic_method"
+    ):
+        method = pv_method["parsed_value"]
+        if method == "none":
+            continue
+
+        set_name = pv_method["entity_byname"][0]
+        alt = pv_method["alternative_name"]
+
+        # Create stochastic_structure entity
+        try:
+            add_entity(target_db, "stochastic_structure", (set_name,))
+        except RuntimeError:
+            pass
+
+        # Get forecast weights: map of {forecast_name: weight}
+        forecast_weights = {}
+        for pv_w in source_db.get_parameter_value_items(
+            entity_class_name="set", parameter_definition_name="stochastic_forecast_weights"
+        ):
+            if pv_w["entity_byname"][0] == set_name:
+                parsed = pv_w["parsed_value"]
+                if hasattr(parsed, "indexes"):
+                    for idx, val in zip(parsed.indexes, parsed.values):
+                        forecast_weights[str(idx)] = float(val)
+
+        # Create "realization" scenario entity + structure relationship
+        realization_name = set_name + "_realization"
+        try:
+            add_entity(target_db, "stochastic_scenario", (realization_name,))
+        except RuntimeError:
+            pass
+        try:
+            add_entity(
+                target_db, "stochastic_structure__stochastic_scenario",
+                (set_name, realization_name),
+            )
+        except RuntimeError:
+            pass
+
+        # Create forecast scenario entities + relationships + weights + parent-child
+        for forecast_name, weight in forecast_weights.items():
+            try:
+                add_entity(target_db, "stochastic_scenario", (forecast_name,))
+            except RuntimeError:
+                pass
+            try:
+                add_entity(
+                    target_db, "stochastic_structure__stochastic_scenario",
+                    (set_name, forecast_name),
+                )
+            except RuntimeError:
+                pass
+            # Set weight_relative_to_parents
+            try:
+                add_parameter_value(
+                    target_db, "stochastic_structure__stochastic_scenario",
+                    "weight_relative_to_parents",
+                    alt, (set_name, forecast_name), weight,
+                )
+            except RuntimeError:
+                pass
+            # Parent-child: realization → forecast
+            try:
+                add_entity(
+                    target_db, "parent_stochastic_scenario__child_stochastic_scenario",
+                    (realization_name, forecast_name),
+                )
+            except RuntimeError:
+                pass
+
+        # Link set member nodes → node__stochastic_structure
+        for member in source_db.get_entity_items(entity_class_name="set__node"):
+            if member["entity_byname"][0] == set_name:
+                node_name = member["entity_byname"][1]
+                try:
+                    add_entity(
+                        target_db, "node__stochastic_structure",
+                        (node_name, set_name),
+                    )
+                except RuntimeError:
+                    pass
+
+        # Link set member units → units_on__stochastic_structure
+        for member in source_db.get_entity_items(entity_class_name="set__unit"):
+            if member["entity_byname"][0] == set_name:
+                unit_name = member["entity_byname"][1]
+                try:
+                    add_entity(
+                        target_db, "units_on__stochastic_structure",
+                        (unit_name, set_name),
+                    )
+                except RuntimeError:
+                    pass
+
+        # If stochastic_scope is whole_model, set model__default_stochastic_structure
+        if stochastic_scope == "whole_model":
+            for model_name in model_names:
+                try:
+                    add_entity(
+                        target_db, "model__default_stochastic_structure",
+                        (model_name, set_name),
+                    )
+                except RuntimeError:
+                    pass
+
+    try:
+        target_db.commit_session("Added stochastic structure")
+    except:
+        print("commit stochastic structure error")
+
 
 def process_reserves(source_db, target_db):
     """Map INES reserve entities and parameters to SpineOpt node-based reserves."""
