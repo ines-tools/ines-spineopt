@@ -114,6 +114,9 @@ def populate_source_db():
             "unit_flow__unit_flow",
             ("gas_node", "gas_plant", "gas_plant", "elec_node"),
         )
+        # profile_limit_upper time_series test entity
+        add_ent("unit", ("ts_profile_unit",))
+        add_ent("unit__to_node", ("ts_profile_unit", "elec_node"))
         # Reserve test entities
         add_ent("reserve", ("up_reserve",))
         add_ent("node__reserve", ("elec_node", "up_reserve"))
@@ -190,6 +193,11 @@ def populate_source_db():
         add_val("node", "storage_investment_cost", ("storage_node",), 50000.0)
         add_val("node", "storage_salvage_value", ("storage_node",), 3000.0)
         add_val("node", "storage_fixed_cost", ("storage_node",), 10000.0)
+
+        # === profile_limit_upper as time_series with float availability ===
+        add_val("unit", "availability", ("ts_profile_unit",), 0.8)
+        ts_profile = {"type": "time_series", "data": {"2025-01-01T00:00:00": 0.5, "2025-01-01T01:00:00": 0.7}}
+        add_val("unit__to_node", "profile_limit_upper", ("ts_profile_unit", "elec_node"), ts_profile)
 
         # === map_of_periods_or_historical_to_ts (map) ===
         period_map_val = {"type": "map", "index_type": "str", "data": {"p2025": 0.9, "p2030": 0.85}}
@@ -387,8 +395,11 @@ def verify_results():
         ("connection", "connection_investment_cost", ("power_line",), "link inv_cost"),
         ("connection", "availability_factor", ("power_line",), "link availability"),
         ("connection__from_node", "connection_flow_cost", None, "link op_cost"),
-        ("connection__from_node", "capacity_per_connection", None, "link capacity"),
-        ("connection__node__node", "fix_ratio_out_in_connection_flow", None, "link efficiency"),
+        ("connection__from_node", "capacity_per_connection", ("power_line", "elec_node"), "link capacity from_node1"),
+        ("connection__from_node", "capacity_per_connection", ("power_line", "gas_node"), "link capacity from_node2"),
+        ("connection__to_node", "capacity_per_connection", ("power_line", "elec_node"), "link capacity to_node1"),
+        ("connection__to_node", "capacity_per_connection", ("power_line", "gas_node"), "link capacity to_node2"),
+        ("connection__node__node", "fix_ratio_out_in_connection_flow", ("power_line", "gas_node", "elec_node"), "link efficiency"),
         ("node", "tax_out_unit_flow", ("gas_node",), "commodity_price"),
         ("node", "storage_investment_cost", ("storage_node",), "storage_inv_cost"),
         ("node", "storage_decommissioning_cost", ("storage_node",), "storage_salvage * -1"),
@@ -402,6 +413,7 @@ def verify_results():
         # === From process_availability ===
         ("unit", "availability_factor", ("gas_plant",), "avail * profile_limit_upper"),
         ("unit", "availability_factor", ("wind_farm",), "availability map only"),
+        ("unit", "availability_factor", ("ts_profile_unit",), "avail float * profile_limit_upper ts"),
 
         # === From default_parameters (overridden by process_investment_integer) ===
         ("unit", "investment_variable_type", None, "default unit inv_var_type"),
@@ -454,12 +466,12 @@ def verify_results():
          ("eff_unit", "elec_node", "fuel_node", "eff_unit"), "constant efficiency ratio"),
 
         # === From process_efficiency: partial_load_efficiency ===
-        ("node__to_unit", "operating_points",
-         ("fuel_node", "pw_unit"), "piecewise operating_points"),
-        ("node__to_unit", "minimum_operating_point",
-         ("fuel_node", "pw_unit"), "piecewise min_operating_point"),
+        ("unit__to_node", "operating_points",
+         ("pw_unit", "elec_node"), "piecewise operating_points"),
+        ("unit__to_node", "minimum_operating_point",
+         ("pw_unit", "elec_node"), "piecewise min_operating_point"),
         ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
-         ("pw_unit", "elec_node", "fuel_node", "pw_unit"), "piecewise efficiency ratio"),
+         ("fuel_node", "pw_unit", "pw_unit", "elec_node"), "piecewise efficiency ratio"),
 
         # === From process_emissions: CO2 ===
         ("node", "storage_active", ("atmosphere",), "atmosphere storage_active"),
@@ -542,8 +554,13 @@ def verify_results():
 
         # === From rolling_jump / rolling_horizon ===
         ("model", "roll_forward", ("sp1",), "rolling_jump to roll_forward"),
-        ("temporal_block", "block_end", ("operations_p2025",), "rolling_horizon to block_end"),
-        ("temporal_block", "block_end", ("operations_p2030",), "rolling_horizon to block_end p2030"),
+        ("temporal_block", "block_end", ("sp1_operations_p2025",), "rolling_horizon to block_end"),
+        ("temporal_block", "block_end", ("sp1_operations_p2030",), "rolling_horizon to block_end p2030"),
+
+        # === Node penalty defaults ===
+        ("node", "balance_penalty", ("gas_node",), "default node penalty on gas_node"),
+        ("node", "balance_penalty", ("storage_node",), "default node penalty on storage_node"),
+        ("node", "balance_penalty", ("fuel_node",), "default node penalty on fuel_node"),
     ]
 
     found = []

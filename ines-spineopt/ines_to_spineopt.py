@@ -2,6 +2,7 @@ import spinedb_api as api
 from spinedb_api import DatabaseMapping, DateTime, Map, to_database
 from spinedb_api.parameter_value import convert_map_to_table, IndexedValue
 from sqlalchemy.exc import DBAPIError
+from spinedb_api.exception import NothingToCommit
 import yaml
 import sys
 from ines_tools import ines_transform
@@ -220,8 +221,10 @@ def main():
                         )
             try:
                 target_db.commit_session("Converted min_up/down_time to duration")
-            except:
+            except NothingToCommit:
                 pass
+            except DBAPIError as e:
+                print("commit min_up/down_time to duration error:", e)
             ## Copy entities to parameters
             # target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
 
@@ -293,6 +296,12 @@ def main():
             # forecast parameters → scenario-indexed Maps
             process_forecasts(source_db, target_db)
 
+            # node penalty defaults
+            process_node_penalty(source_db, target_db, settings["node_penalty_default"])
+
+            # bidirectional link capacity and efficiency
+            process_link_bidirectional(source_db, target_db)
+
 
 def process_forecasts(source_db, target_db):
     """Transform INES _forecasts parameters to SpineOpt scenario-indexed Maps.
@@ -362,8 +371,10 @@ def process_forecasts(source_db, target_db):
 
     try:
         target_db.commit_session("Added forecast parameters")
-    except:
-        print("commit forecast parameters error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit forecast parameters error:", e)
 
 
 def process_stochastic_structure(source_db, target_db):
@@ -491,8 +502,10 @@ def process_stochastic_structure(source_db, target_db):
 
     try:
         target_db.commit_session("Added stochastic structure")
-    except:
-        print("commit stochastic structure error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit stochastic structure error:", e)
 
 
 def process_reserves(source_db, target_db):
@@ -612,8 +625,10 @@ def process_reserves(source_db, target_db):
 
     try:
         target_db.commit_session("Added reserves")
-    except:
-        print("commit reserves error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit reserves error:", e)
 
 
 def process_investment_integer(source_db, target_db):
@@ -640,8 +655,10 @@ def process_investment_integer(source_db, target_db):
                 )
     try:
         target_db.commit_session("Added integer investment variable types")
-    except:
-        print("commit integer investment variable types error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit integer investment variable types error:", e)
 
 
 def process_availability(source_db, target_db):
@@ -663,6 +680,8 @@ def process_availability(source_db, target_db):
         alt = pv["alternative_name"]
         if pv["type"] == "float":
             availability[(unit_name, alt)] = pv["parsed_value"]
+        elif pv["type"] == "time_series":
+            availability[(unit_name, alt)] = pv["parsed_value"]
         elif pv["type"] == "map":
             ts = _map_to_time_series(pv["parsed_value"], periods_info)
             if ts:
@@ -683,6 +702,8 @@ def process_availability(source_db, target_db):
             if (unit_name, alt) in profile:
                 continue  # first flow wins
             if pv["type"] == "float":
+                profile[(unit_name, alt)] = pv["parsed_value"]
+            elif pv["type"] == "time_series":
                 profile[(unit_name, alt)] = pv["parsed_value"]
             elif pv["type"] == "map":
                 ts = _map_to_time_series(pv["parsed_value"], periods_info)
@@ -721,35 +742,52 @@ def process_availability(source_db, target_db):
 
     try:
         target_db.commit_session("Added availability")
-    except:
-        print("commit availability error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit availability error:", e)
 
 
 def _multiply_values(a, b):
-    """Multiply two parameter values that may be floats or time_series dicts."""
-    a_is_ts = isinstance(a, dict) and a.get("type") == "time_series"
-    b_is_ts = isinstance(b, dict) and b.get("type") == "time_series"
+    """Multiply two parameter values that may be floats, time_series dicts, or TimeSeriesVariableResolution objects."""
+    from spinedb_api.parameter_value import TimeSeriesVariableResolution
+
+    def _is_ts(v):
+        return isinstance(v, TimeSeriesVariableResolution) or (isinstance(v, dict) and v.get("type") == "time_series")
+
+    def _to_dict(v):
+        """Normalize to {timestamp_str: float} dict."""
+        if isinstance(v, TimeSeriesVariableResolution):
+            return {str(idx): val for idx, val in zip(v.indexes, v.values)}
+        if isinstance(v, dict):
+            return v["data"]
+        return None
+
+    a_is_ts = _is_ts(a)
+    b_is_ts = _is_ts(b)
 
     if not a_is_ts and not b_is_ts:
         return a * b
 
     if a_is_ts and not b_is_ts:
+        a_data = _to_dict(a)
         return {
             "type": "time_series",
-            "data": {k: v * b for k, v in a["data"].items()},
+            "data": {k: v * b for k, v in a_data.items()},
         }
 
     if not a_is_ts and b_is_ts:
+        b_data = _to_dict(b)
         return {
             "type": "time_series",
-            "data": {k: v * a for k, v in b["data"].items()},
+            "data": {k: v * a for k, v in b_data.items()},
         }
 
     # Both are time_series - multiply matching timestamps
+    a_data = _to_dict(a)
+    b_data = _to_dict(b)
     merged_data = {}
-    all_keys = list(dict.fromkeys(list(a["data"].keys()) + list(b["data"].keys())))
-    a_data = a["data"]
-    b_data = b["data"]
+    all_keys = list(dict.fromkeys(list(a_data.keys()) + list(b_data.keys())))
     last_a = None
     last_b = None
     for k in all_keys:
@@ -864,12 +902,12 @@ def process_invest_period(source_db, target_db):
                 alt = pv["alternative_name"]
 
                 # Get initial existing capacity
-                existing_item = source_db.get_parameter_value_item(
+                existing_items = source_db.get_parameter_value_items(
                     entity_class_name=source_class,
                     entity_byname=entity_byname,
                     parameter_definition_name=existing_param,
-                    alternative_name="Base",
                 )
+                existing_item = existing_items[0] if existing_items else None
                 existing_count = 0.0
                 if existing_item:
                     if existing_item["type"] == "float":
@@ -909,35 +947,39 @@ def process_invest_period(source_db, target_db):
 
     try:
         target_db.commit_session("Added investment period limits")
-    except:
-        print("commit investment period limits error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit investment period limits error:", e)
 
 
 def _get_periods_info(source_db):
-    """Get period start times and years represented from the source database."""
-    periods = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="period"
-        )[0]["value"]
-    )["data"]
+    """Get period start times and years represented from the source database.
+    Aggregates periods across all solve_pattern entities."""
+    all_periods = []
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern", parameter_definition_name="period"
+    ):
+        periods_value = json.loads(pv["value"])["data"]
+        for p in _ensure_list(periods_value):
+            if p not in all_periods:
+                all_periods.append(p)
     starttime = {}
     year_repr = {}
-    for period in periods:
+    for period in all_periods:
         starttime[period] = json.loads(
-            source_db.get_parameter_value_item(
+            source_db.get_parameter_value_items(
                 entity_class_name="period",
                 entity_byname=(period,),
-                alternative_name="Base",
                 parameter_definition_name="start_time",
-            )["value"]
+            )[0]["value"]
         )["data"]
-        year_repr[period] = source_db.get_parameter_value_item(
+        year_repr[period] = source_db.get_parameter_value_items(
             entity_class_name="period",
             entity_byname=(period,),
-            alternative_name="Base",
             parameter_definition_name="years_represented",
-        )["parsed_value"]
-    return {"periods": periods, "starttime": starttime, "year_repr": year_repr}
+        )[0]["parsed_value"]
+    return {"periods": all_periods, "starttime": starttime, "year_repr": year_repr}
 
 
 def _map_to_time_series(parsed_value, periods_info):
@@ -1060,7 +1102,7 @@ def _create_emission_flows(target_db, emission_node, emission_rates):
                 pass
             add_parameter_value(
                 target_db, "unit_flow__user_constraint", "coefficient_for_unit_flow",
-                "Base", (unit_name, emission_node, constraint_name), -1.0,
+                flows[0][3], (unit_name, emission_node, constraint_name), -1.0,
             )
             for flow_class, node_name, rate, alt in flows:
                 if flow_class == "node__to_unit":
@@ -1196,7 +1238,7 @@ def _process_period_emission_limits(target_db, config, param_map, emission_rates
                     pass
                 add_parameter_value(
                     target_db, "unit_flow__user_constraint", "coefficient_for_unit_flow",
-                    "Base", (unit_name, cap_node, constraint_name), -1.0,
+                    flows[0][3], (unit_name, cap_node, constraint_name), -1.0,
                 )
                 for flow_class, node_name, rate, alt in flows:
                     if not isinstance(rate, (int, float)):
@@ -1251,11 +1293,12 @@ def _handle_explicit_co2_outputs(target_db):
             add_entity(target_db, "unit_flow__unit_flow", (unit_name, node_out, "atmosphere", unit_name))
         except RuntimeError:
             pass
+        default_alt = target_db.get_alternative_items()[0]["name"]
         add_parameter_value(
             target_db,
             "unit_flow__unit_flow",
             "constraint_equality_flow_ratio",
-            "Base",
+            default_alt,
             (unit_name, node_out, "atmosphere", unit_name),
             1.0,
         )
@@ -1342,44 +1385,49 @@ def process_emissions(source_db, target_db):
 
     try:
         target_db.commit_session("Added emissions")
-    except:
-        print("commit emissions error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit emissions error:", e)
 
 
 def map_of_periods_or_historical_to_ts(source_db, target_db, settings):
 
     starttime = {}
     year_repr = {}
-    for period in json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="period"
-        )[0]["value"]
-    )["data"]:
+    all_periods = []
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern", parameter_definition_name="period"
+    ):
+        for period in _ensure_list(json.loads(pv["value"])["data"]):
+            if period not in all_periods:
+                all_periods.append(period)
+    for period in all_periods:
         starttime[period] = json.loads(
-            source_db.get_parameter_value_item(
+            source_db.get_parameter_value_items(
                 entity_class_name="period",
                 entity_byname=(period,),
-                alternative_name="Base",
                 parameter_definition_name="start_time",
-            )["value"]
+            )[0]["value"]
         )["data"]
-        year_repr[period] = source_db.get_parameter_value_item(
+        year_repr[period] = source_db.get_parameter_value_items(
             entity_class_name="period",
             entity_byname=(period,),
-            alternative_name="Base",
             parameter_definition_name="years_represented",
-        )["parsed_value"]
+        )[0]["parsed_value"]
 
-    duration = json.loads(
+    duration_value = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern", parameter_definition_name="duration"
         )[0]["value"]
     )["data"]
-    starttime_sp = json.loads(
+    duration = _ensure_list(duration_value)[0]
+    starttime_sp_value = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern", parameter_definition_name="start_time"
         )[0]["value"]
     )["data"]
+    starttime_sp = _ensure_list(starttime_sp_value)
     resolution = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern",
@@ -1539,28 +1587,28 @@ def map_of_periods_or_historical_to_ts(source_db, target_db, settings):
 
     try:
         target_db.commit_session("Added map of periods, historical data to timeseries")
-    except:
-        print("commit map of periods, historical data to timeseries error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit map of periods, historical data to timeseries error:", e)
+
+
+def _ensure_list(value):
+    """Ensure a parsed JSON value is a list (wrap single values in a list)."""
+    if isinstance(value, list):
+        return value
+    return [value]
 
 
 def timeline_setup(source_db, target_db):
 
-    # model_data
-    model_name = source_db.get_entity_items(entity_class_name="solve_pattern")[0][
-        "name"
-    ]
-    # Process scenario realizations
+    # Determine default alternative name from source DB
+    default_alt = source_db.get_alternative_items()[0]["name"]
+
+    # Process scenario realizations (shared across all models)
     sto_structure = "deterministic"
     sto_scenario = "realization"
     add_entity(target_db, "stochastic_structure", (sto_structure,))
-    add_entity(
-        target_db, "model__default_stochastic_structure", (model_name, sto_structure)
-    )
-    add_entity(
-        target_db,
-        "model__default_investment_stochastic_structure",
-        (model_name, sto_structure),
-    )
     add_entity(target_db, "stochastic_scenario", (sto_scenario,))
     add_entity(
         target_db,
@@ -1568,283 +1616,304 @@ def timeline_setup(source_db, target_db):
         (sto_structure, sto_scenario),
     )
 
-    periods = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="period"
-        )[0]["value"]
-    )["data"]
-    resolution = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern",
-            parameter_definition_name="time_resolution",
-        )[0]["value"]
-    )["data"]
+    # Loop over all solve_pattern entities — each becomes a model
+    for sp_entity in source_db.get_entity_items(entity_class_name="solve_pattern"):
+        model_name = sp_entity["name"]
+        sp_byname = (model_name,)
 
-    # historical data
-    duration = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="duration"
-        )[0]["value"]
-    )["data"]
+        add_entity(
+            target_db, "model__default_stochastic_structure", (model_name, sto_structure)
+        )
+        add_entity(
+            target_db,
+            "model__default_investment_stochastic_structure",
+            (model_name, sto_structure),
+        )
 
-    # rolling optimization parameters (optional)
-    rolling_jump_items = source_db.get_parameter_value_items(
-        entity_class_name="solve_pattern", parameter_definition_name="rolling_jump"
-    )
-    rolling_jump = json.loads(rolling_jump_items[0]["value"])["data"] if rolling_jump_items else None
-    rolling_horizon_items = source_db.get_parameter_value_items(
-        entity_class_name="solve_pattern", parameter_definition_name="rolling_horizon"
-    )
-    rolling_horizon = json.loads(rolling_horizon_items[0]["value"])["data"] if rolling_horizon_items else None
+        periods_value = json.loads(
+            source_db.get_parameter_value_items(
+                entity_class_name="solve_pattern", parameter_definition_name="period",
+                entity_byname=sp_byname,
+            )[0]["value"]
+        )["data"]
+        periods = _ensure_list(periods_value)
 
-    py_yearrs = []
-    # if not multiyear
-    if len(periods) == 1:
-        print("it is not a multiyear investment problem")
-        # model horizon
-        for period in periods:
-            py_start = json.loads(
-                source_db.get_parameter_value_item(
+        resolution = json.loads(
+            source_db.get_parameter_value_items(
+                entity_class_name="solve_pattern",
+                parameter_definition_name="time_resolution",
+                entity_byname=sp_byname,
+            )[0]["value"]
+        )["data"]
+
+        duration_value = json.loads(
+            source_db.get_parameter_value_items(
+                entity_class_name="solve_pattern", parameter_definition_name="duration",
+                entity_byname=sp_byname,
+            )[0]["value"]
+        )["data"]
+        durations = _ensure_list(duration_value)
+
+        # rolling optimization parameters (optional)
+        rolling_jump_items = source_db.get_parameter_value_items(
+            entity_class_name="solve_pattern", parameter_definition_name="rolling_jump",
+            entity_byname=sp_byname,
+        )
+        rolling_jump = json.loads(rolling_jump_items[0]["value"])["data"] if rolling_jump_items else None
+        rolling_horizon_items = source_db.get_parameter_value_items(
+            entity_class_name="solve_pattern", parameter_definition_name="rolling_horizon",
+            entity_byname=sp_byname,
+        )
+        rolling_horizon = json.loads(rolling_horizon_items[0]["value"])["data"] if rolling_horizon_items else None
+
+        # Use first duration for all periods (or match 1:1 if same length)
+        def get_duration(period_idx):
+            if len(durations) > period_idx:
+                return durations[period_idx]
+            return durations[0]
+
+        py_yearrs = []
+        # if not multiyear
+        if len(periods) == 1:
+            print("it is not a multiyear investment problem")
+            # model horizon
+            for i, period in enumerate(periods):
+                duration = get_duration(i)
+                py_start = json.loads(
+                    source_db.get_parameter_value_items(
+                        entity_class_name="period",
+                        parameter_definition_name="start_time",
+                        entity_byname=(period,),
+                    )[0]["value"]
+                )["data"]
+                py_yearr = source_db.get_parameter_value_items(
                     entity_class_name="period",
-                    parameter_definition_name="start_time",
-                    alternative_name="Base",
+                    parameter_definition_name="years_represented",
                     entity_byname=(period,),
-                )["value"]
-            )["data"]
-            py_yearr = source_db.get_parameter_value_item(
-                entity_class_name="period",
-                parameter_definition_name="years_represented",
-                alternative_name="Base",
-                entity_byname=(period,),
-            )["parsed_value"]
-            py_yearrs.append(py_yearr)
-            print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
-            extra_duration = (
-                pd.Timedelta("1D")
-                if pd.Timestamp(py_start).year % 4 == 0
-                else pd.Timedelta("0h")
-            )
-            py_end = (
-                pd.Timestamp(py_start) + pd.Timedelta(duration) + extra_duration
-            ).isoformat()
+                )[0]["parsed_value"]
+                py_yearrs.append(py_yearr)
+                print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
+                extra_duration = (
+                    pd.Timedelta("1D")
+                    if pd.Timestamp(py_start).year % 4 == 0
+                    else pd.Timedelta("0h")
+                )
+                py_end = (
+                    pd.Timestamp(py_start) + pd.Timedelta(duration) + extra_duration
+                ).isoformat()
+                add_parameter_value(
+                    target_db,
+                    "model",
+                    "model_start",
+                    default_alt,
+                    (model_name,),
+                    {"type": "date_time", "data": py_start},
+                )
+                add_parameter_value(
+                    target_db,
+                    "model",
+                    "model_end",
+                    default_alt,
+                    (model_name,),
+                    {"type": "date_time", "data": py_end},
+                )
+
+                # operational_resolution
+                temporal_block_name = f"{model_name}_operations"
+                add_entity(target_db, "temporal_block", (temporal_block_name,))
+                add_entity(
+                    target_db,
+                    "model__default_temporal_block",
+                    (model_name, temporal_block_name),
+                )
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "resolution",
+                    default_alt,
+                    (temporal_block_name,),
+                    {"type": "duration", "data": resolution},
+                )
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "weight",
+                    default_alt,
+                    (temporal_block_name,),
+                    py_yearr,
+                )
+                if rolling_horizon is not None:
+                    add_parameter_value(
+                        target_db,
+                        "temporal_block",
+                        "block_end",
+                        default_alt,
+                        (temporal_block_name,),
+                        {"type": "duration", "data": rolling_horizon},
+                    )
+
+        else:
+            print("Multiyear investment planning")
+            py_starts = []
+            py_ends = []
+            py_yearrs = []
+            # model horizon
+            for i, period in enumerate(periods):
+                duration = get_duration(i)
+                # add_alternative(target_db,period)
+                py_start = json.loads(
+                    source_db.get_parameter_value_items(
+                        entity_class_name="period",
+                        parameter_definition_name="start_time",
+                        entity_byname=(period,),
+                    )[0]["value"]
+                )["data"]
+                py_yearr = source_db.get_parameter_value_items(
+                    entity_class_name="period",
+                    parameter_definition_name="years_represented",
+                    entity_byname=(period,),
+                )[0]["parsed_value"]
+                py_yearrs.append(py_yearr)
+                # operational_resolution
+                temporal_block_name = f"{model_name}_operations_{period}"
+                add_entity(target_db, "temporal_block", (temporal_block_name,))
+                add_entity(
+                    target_db,
+                    "model__default_temporal_block",
+                    (model_name, temporal_block_name),
+                )
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "resolution",
+                    default_alt,
+                    (temporal_block_name,),
+                    {"type": "duration", "data": resolution},
+                )
+                if bool(pd.Timestamp(py_start).year % 4 == 0):
+                    print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
+                    block_start = (
+                        pd.Timestamp(py_start)
+                        + pd.Timedelta(days=366)
+                        - (
+                            pd.Timedelta(resolution)
+                            if i > 0
+                            else pd.Timedelta("0h")
+                        )
+                    ).isoformat()
+                    block_end = (
+                        pd.Timestamp(py_start)
+                        + pd.Timedelta(days=366)
+                        + pd.Timedelta(duration)
+                    ).isoformat()
+                else:
+                    block_start = (pd.Timestamp(py_start)).isoformat()
+                    block_end = (
+                        pd.Timestamp(py_start) + pd.Timedelta(duration)
+                    ).isoformat()
+
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "block_start",
+                    default_alt,
+                    (temporal_block_name,),
+                    {"type": "date_time", "data": block_start},
+                )
+                if rolling_horizon is not None:
+                    add_parameter_value(
+                        target_db,
+                        "temporal_block",
+                        "block_end",
+                        default_alt,
+                        (temporal_block_name,),
+                        {"type": "duration", "data": rolling_horizon},
+                    )
+                else:
+                    add_parameter_value(
+                        target_db,
+                        "temporal_block",
+                        "block_end",
+                        default_alt,
+                        (temporal_block_name,),
+                        {"type": "date_time", "data": block_end},
+                    )
+                add_parameter_value(
+                    target_db,
+                    "temporal_block",
+                    "weight",
+                    default_alt,
+                    (temporal_block_name,),
+                    py_yearr,
+                )
+
+                py_starts.append(pd.Timestamp(py_start))
+                py_ends.append(
+                    pd.Timestamp(str(int(py_start[:4]) + int(py_yearr)) + "-01-01T00:00:00")
+                )
+
             add_parameter_value(
                 target_db,
                 "model",
                 "model_start",
-                "Base",
+                default_alt,
                 (model_name,),
-                {"type": "date_time", "data": py_start},
+                {"type": "date_time", "data": min(py_starts).isoformat()},
             )
             add_parameter_value(
                 target_db,
                 "model",
                 "model_end",
-                "Base",
+                default_alt,
                 (model_name,),
-                {"type": "date_time", "data": py_end},
+                {"type": "date_time", "data": max(py_ends).isoformat()},
+            )
+            # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
+
+        if rolling_jump is not None:
+            add_parameter_value(
+                target_db,
+                "model",
+                "roll_forward",
+                default_alt,
+                (model_name,),
+                {"type": "duration", "data": rolling_jump},
             )
 
-            # operational_resolution
-            temporal_block_name = "operations"
-            add_entity(target_db, "temporal_block", (temporal_block_name,))
-            add_entity(
-                target_db,
-                "model__default_temporal_block",
-                (model_name, temporal_block_name),
-            )
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "resolution",
-                "Base",
-                (temporal_block_name,),
-                {"type": "duration", "data": resolution},
-            )
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "weight",
-                "Base",
-                (temporal_block_name,),
-                py_yearr,
-            )
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "has_free_start",
-                "Base",
-                (temporal_block_name,),
-                True,
-            )
-            if rolling_horizon is not None:
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "block_end",
-                    "Base",
-                    (temporal_block_name,),
-                    {"type": "duration", "data": rolling_horizon},
-                )
-
-    else:
-        print("Multiyear investment planning")
-        py_starts = []
-        py_ends = []
-        py_yearrs = []
-        # model horizon
-        for period in periods:
-            # add_alternative(target_db,period)
-            py_start = json.loads(
-                source_db.get_parameter_value_item(
-                    entity_class_name="period",
-                    parameter_definition_name="start_time",
-                    alternative_name="Base",
-                    entity_byname=(period,),
-                )["value"]
-            )["data"]
-            py_yearr = source_db.get_parameter_value_item(
-                entity_class_name="period",
-                parameter_definition_name="years_represented",
-                alternative_name="Base",
-                entity_byname=(period,),
-            )["parsed_value"]
-            py_yearrs.append(py_yearr)
-            # operational_resolution
-            temporal_block_name = f"operations_{period}"
-            add_entity(target_db, "temporal_block", (temporal_block_name,))
-            add_entity(
-                target_db,
-                "model__default_temporal_block",
-                (model_name, temporal_block_name),
-            )
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "resolution",
-                "Base",
-                (temporal_block_name,),
-                {"type": "duration", "data": resolution},
-            )
-            if bool(pd.Timestamp(py_start).year % 4 == 0):
-                print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
-                block_start = (
-                    pd.Timestamp(py_start)
-                    + pd.Timedelta(days=366)
-                    - (
-                        pd.Timedelta(resolution)
-                        if periods.index(period) > 0
-                        else pd.Timedelta("0h")
-                    )
-                ).isoformat()
-                block_end = (
-                    pd.Timestamp(py_start)
-                    + pd.Timedelta(days=366)
-                    + pd.Timedelta(duration)
-                ).isoformat()
-            else:
-                block_start = (pd.Timestamp(py_start)).isoformat()
-                block_end = (
-                    pd.Timestamp(py_start) + pd.Timedelta(duration)
-                ).isoformat()
-
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "block_start",
-                "Base",
-                (temporal_block_name,),
-                {"type": "date_time", "data": block_start},
-            )
-            if rolling_horizon is not None:
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "block_end",
-                    "Base",
-                    (temporal_block_name,),
-                    {"type": "duration", "data": rolling_horizon},
-                )
-            else:
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "block_end",
-                    "Base",
-                    (temporal_block_name,),
-                    {"type": "date_time", "data": block_end},
-                )
-            add_parameter_value(
-                target_db,
-                "temporal_block",
-                "weight",
-                "Base",
-                (temporal_block_name,),
-                py_yearr,
-            )
-
-            py_starts.append(pd.Timestamp(py_start))
-            py_ends.append(
-                pd.Timestamp(str(int(py_start[:4]) + int(py_yearr)) + "-01-01T00:00:00")
-            )
-
-        add_parameter_value(
+        # investment_resolution # should not be created if there are only operational parameters in the database
+        temporal_block_name = f"{model_name}_planning"
+        add_entity(target_db, "temporal_block", (temporal_block_name,))
+        add_entity(
             target_db,
-            "model",
-            "model_start",
-            "Base",
-            (model_name,),
-            {"type": "date_time", "data": min(py_starts).isoformat()},
+            "model__default_investment_temporal_block",
+            (model_name, temporal_block_name),
         )
         add_parameter_value(
             target_db,
-            "model",
-            "model_end",
-            "Base",
-            (model_name,),
-            {"type": "date_time", "data": max(py_ends).isoformat()},
+            "temporal_block",
+            "resolution",
+            default_alt,
+            (temporal_block_name,),
+            {"type": "duration", "data": resolution},
         )
-        # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
-
-    if rolling_jump is not None:
-        add_parameter_value(
-            target_db,
-            "model",
-            "roll_forward",
-            "Base",
-            (model_name,),
-            {"type": "duration", "data": rolling_jump},
-        )
-
-    # investment_resolution # should not be created if there are only operational parameters in the database
-    temporal_block_name = "planning"
-    add_entity(target_db, "temporal_block", (temporal_block_name,))
-    add_entity(
-        target_db,
-        "model__default_investment_temporal_block",
-        (model_name, temporal_block_name),
-    )
-    add_parameter_value(
-        target_db,
-        "temporal_block",
-        "resolution",
-        "Base",
-        (temporal_block_name,),
-        {"type": "duration", "data": resolution},
-    )
 
     try:
         target_db.commit_session("Added timeline")
-    except:
-        print("commit timeline error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit timeline error:", e)
 
 
 def storage_state_fix_method(source_db, target_db):
 
-    periods = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="period"
-        )[0]["value"]
-    )["data"]
+    all_periods = []
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern", parameter_definition_name="period"
+    ):
+        for p in _ensure_list(json.loads(pv["value"])["data"]):
+            if p not in all_periods:
+                all_periods.append(p)
     resolution = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern",
@@ -1852,14 +1921,13 @@ def storage_state_fix_method(source_db, target_db):
         )[0]["value"]
     )["data"]
     block_starts = {}
-    for period in periods:
+    for period in all_periods:
         py_start = json.loads(
-            source_db.get_parameter_value_item(
+            source_db.get_parameter_value_items(
                 entity_class_name="period",
                 parameter_definition_name="start_time",
-                alternative_name="Base",
                 entity_byname=(period,),
-            )["value"]
+            )[0]["value"]
         )["data"]
         block_starts[period] = (
             (pd.Timestamp(py_start) + pd.Timedelta(days=366)).isoformat()
@@ -1882,12 +1950,12 @@ def storage_state_fix_method(source_db, target_db):
                     parameter_definition_name="storage_state_fix",
                 )
                 if values_:
-                    existing_ = source_db.get_parameter_value_item(
+                    existing_items = source_db.get_parameter_value_items(
                         entity_class_name=storage_method["entity_class_name"],
                         entity_byname=storage_method["entity_byname"],
                         parameter_definition_name="storages_existing",
-                        alternative_name="Base",
                     )
+                    existing_ = existing_items[0] if existing_items else None
                     if not existing_:
                         multiplier = 1.0
                     else:
@@ -1918,9 +1986,9 @@ def storage_state_fix_method(source_db, target_db):
                                 ):
                                     alternative_name = value_["alternative_name"]
                                 else:
-                                    if value_["alternative_name"] == "Base":
+                                    if value_["alternative_name"] == existing_["alternative_name"]:
                                         alternative_name = capacity_["alternative_name"]
-                                    elif capacity_["alternative_name"] == "Base":
+                                    elif capacity_["alternative_name"] == existing_["alternative_name"]:
                                         alternative_name = value_["alternative_name"]
                                     else:
                                         add_alternative(
@@ -1972,8 +2040,10 @@ def storage_state_fix_method(source_db, target_db):
             )
     try:
         target_db.commit_session("Added fixed storage state method")
-    except:
-        print("commit fixed storage state error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit fixed storage state error:", e)
 
 
 def storage_state_binding_method(source_db, target_db):
@@ -1994,14 +2064,16 @@ def storage_state_binding_method(source_db, target_db):
                     target_db,
                     "node__temporal_block",
                     "cyclic_condition",
-                    "Base",
+                    storage_method["alternative_name"],
                     (storage_method["entity_name"], entity_map["entity_byname"][1]),
                     True,
                 )
     try:
         target_db.commit_session("Added storage state binding method")
-    except:
-        print("commit storage state binding method error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit storage state binding method error:", e)
 
 
 def limiting_investments_notallowed(source_db, target_db):
@@ -2035,25 +2107,26 @@ def limiting_investments_notallowed(source_db, target_db):
     starttime = {}
     year_repr = {}
 
-    for period in json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="period"
-        )[0]["value"]
-    )["data"]:
+    all_periods = []
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern", parameter_definition_name="period"
+    ):
+        for p in _ensure_list(json.loads(pv["value"])["data"]):
+            if p not in all_periods:
+                all_periods.append(p)
+    for period in all_periods:
         starttime[period] = json.loads(
-            source_db.get_parameter_value_item(
+            source_db.get_parameter_value_items(
                 entity_class_name="period",
                 entity_byname=(period,),
-                alternative_name="Base",
                 parameter_definition_name="start_time",
-            )["value"]
+            )[0]["value"]
         )["data"]
-        year_repr[period] = source_db.get_parameter_value_item(
+        year_repr[period] = source_db.get_parameter_value_items(
             entity_class_name="period",
             entity_byname=(period,),
-            alternative_name="Base",
             parameter_definition_name="years_represented",
-        )["parsed_value"]
+        )[0]["parsed_value"]
 
     for source_param in ["investment_method", "storage_investment_method"]:
         for param_map in [
@@ -2125,14 +2198,14 @@ def limiting_investments_notallowed(source_db, target_db):
                             0.0,
                         )
 
-                        retirement_method_value = source_db.get_parameter_value_item(
+                        retirement_method_items = source_db.get_parameter_value_items(
                             entity_class_name=param_map["entity_class_name"],
                             parameter_definition_name=retirement_method[
                                 param_map["entity_class_name"]
                             ],
                             entity_byname=param_map["entity_byname"],
-                            alternative_name="Base",
                         )
+                        retirement_method_value = retirement_method_items[0] if retirement_method_items else None
                         if retirement_method_value:
                             if retirement_method_value["parsed_value"] == "not_retired":
                                 add_parameter_value(
@@ -2154,14 +2227,14 @@ def limiting_investments_notallowed(source_db, target_db):
                         existing_["entity_byname"],
                         value_,
                     )
-                    retirement_method_value = source_db.get_parameter_value_item(
+                    retirement_method_items = source_db.get_parameter_value_items(
                         entity_class_name=param_map["entity_class_name"],
                         parameter_definition_name=retirement_method[
                             param_map["entity_class_name"]
                         ],
                         entity_byname=param_map["entity_byname"],
-                        alternative_name="Base",
                     )
+                    retirement_method_value = retirement_method_items[0] if retirement_method_items else None
                     if retirement_method_value and retirement_method_value["parsed_value"] == "not_retired":
                         fix_value = value_
                     else:
@@ -2182,17 +2255,20 @@ def limiting_investments_notallowed(source_db, target_db):
 
     try:
         target_db.commit_session("Added candadite assets")
-    except:
-        print("commit candadite assets error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit candadite assets error:", e)
 
 
 def set_to_entities_and_parameters(source_db, target_db):
 
-    model_duration = json.loads(
+    model_duration_value = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern", parameter_definition_name="duration"
         )[0]["value"]
     )["data"]
+    model_duration = _ensure_list(model_duration_value)[0]
     resolution = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern",
@@ -2416,11 +2492,14 @@ def set_to_entities_and_parameters(source_db, target_db):
 
     try:
         target_db.commit_session("Added set constraints")
-    except:
-        print("commit set constraints error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit set constraints error:", e)
 
 
 def default_parameters(target_db, settings):
+    default_alt = target_db.get_alternative_items()[0]["name"]
     for target_entity_class in settings:
         for entity_item in target_db.get_entity_items(
             entity_class_name=target_entity_class
@@ -2430,14 +2509,16 @@ def default_parameters(target_db, settings):
                     target_db,
                     target_entity_class,
                     target_parameter,
-                    "Base",
+                    default_alt,
                     entity_item["entity_byname"],
                     settings[target_entity_class][target_parameter],
                 )
     try:
         target_db.commit_session("Added default_parameters")
-    except:
-        print("commit default_parameters error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit default_parameters error:", e)
 
 
 def candidates_to_number_of(target_db):
@@ -2462,8 +2543,10 @@ def candidates_to_number_of(target_db):
 
     try:
         target_db.commit_session("Added candidate to number of")
-    except:
-        print("commit candidate to number of error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit candidate to number of error:", e)
 
 
 def existing_capacity(source_db, target_db):
@@ -2511,8 +2594,10 @@ def existing_capacity(source_db, target_db):
                 )
     try:
         target_db.commit_session("Added existing capacity")
-    except:
-        print("commit existing capacity error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit existing capacity error:", e)
 
 
 def lifetime_to_duration(source_db, target_db, settings):
@@ -2545,8 +2630,10 @@ def lifetime_to_duration(source_db, target_db, settings):
 
     try:
         target_db.commit_session("Added lifetime conversion")
-    except:
-        print("commit lifetime conversion error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit lifetime conversion error:", e)
 
 
 def unit_flow_variants(source_db, target_db, settings):
@@ -2582,39 +2669,42 @@ def unit_flow_variants(source_db, target_db, settings):
 
             starttime = {}
             year_repr = {}
-            for period in json.loads(
-                source_db.get_parameter_value_items(
-                    entity_class_name="solve_pattern",
-                    parameter_definition_name="period",
-                )[0]["value"]
-            )["data"]:
+            all_periods = []
+            for pv_sp in source_db.get_parameter_value_items(
+                entity_class_name="solve_pattern",
+                parameter_definition_name="period",
+            ):
+                for p in _ensure_list(json.loads(pv_sp["value"])["data"]):
+                    if p not in all_periods:
+                        all_periods.append(p)
+            for period in all_periods:
                 starttime[period] = json.loads(
-                    source_db.get_parameter_value_item(
+                    source_db.get_parameter_value_items(
                         entity_class_name="period",
                         entity_byname=(period,),
-                        alternative_name="Base",
                         parameter_definition_name="start_time",
-                    )["value"]
+                    )[0]["value"]
                 )["data"]
-                year_repr[period] = source_db.get_parameter_value_item(
+                year_repr[period] = source_db.get_parameter_value_items(
                     entity_class_name="period",
                     entity_byname=(period,),
-                    alternative_name="Base",
                     parameter_definition_name="years_represented",
-                )["parsed_value"]
+                )[0]["parsed_value"]
 
-            duration = json.loads(
+            duration_value = json.loads(
                 source_db.get_parameter_value_items(
                     entity_class_name="solve_pattern",
                     parameter_definition_name="duration",
                 )[0]["value"]
             )["data"]
-            starttime_sp = json.loads(
+            duration = _ensure_list(duration_value)[0]
+            starttime_sp_value = json.loads(
                 source_db.get_parameter_value_items(
                     entity_class_name="solve_pattern",
                     parameter_definition_name="start_time",
                 )[0]["value"]
             )["data"]
+            starttime_sp = _ensure_list(starttime_sp_value)
             resolution = json.loads(
                 source_db.get_parameter_value_items(
                     entity_class_name="solve_pattern",
@@ -2702,22 +2792,26 @@ def unit_flow_variants(source_db, target_db, settings):
 
     try:
         target_db.commit_session("Added unit flows")
-    except:
-        print("commit unit flows error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit unit flows error:", e)
 
 
 def flow_profile_method(source_db, target_db):
 
-    duration = json.loads(
+    duration_value = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern", parameter_definition_name="duration"
         )[0]["value"]
     )["data"]
-    starttime = json.loads(
+    duration = _ensure_list(duration_value)[0]
+    starttime_value = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern", parameter_definition_name="start_time"
         )[0]["value"]
     )["data"]
+    starttime = _ensure_list(starttime_value)
     resolution = json.loads(
         source_db.get_parameter_value_items(
             entity_class_name="solve_pattern",
@@ -2727,31 +2821,31 @@ def flow_profile_method(source_db, target_db):
 
     for param_map in source_db.get_parameter_value_items(
         entity_class_name="node",
-        alternative_name="Base",
         parameter_definition_name="flow_profile",
     ):
+        alt = param_map["alternative_name"]
 
-        flow_method = source_db.get_parameter_value_item(
+        flow_method_items = source_db.get_parameter_value_items(
             entity_class_name="node",
-            alternative_name="Base",
             entity_byname=param_map["entity_byname"],
             parameter_definition_name="flow_scaling_method",
         )
+        flow_method = flow_method_items[0] if flow_method_items else None
 
-        if flow_method["parsed_value"] == "scale_to_annual":
+        if flow_method and flow_method["parsed_value"] == "scale_to_annual":
             target_name = param_map["entity_name"] + "-group"
             add_entity(target_db, "node", (target_name,))
             add_parameter_value(
                 target_db,
                 "node",
                 "balance_type",
-                "Base",
+                alt,
                 (target_name,),
                 "none",
             )
             add_entity_group(target_db, "node", target_name, param_map["entity_name"])
             definition_condition = True
-        elif flow_method["parsed_value"] == "use_profile_directly":
+        elif flow_method and flow_method["parsed_value"] == "use_profile_directly":
             target_name = param_map["entity_name"]
             definition_condition = True
         else:
@@ -2805,17 +2899,16 @@ def flow_profile_method(source_db, target_db):
                         )
 
             elif param_map["type"] == "time_series":
-                # the values still need to be multiplied with -1 ... or not, as flextool assumes negative demand values ... This needs to be aligned.
-                print(
-                    "warning, the timeseries type is currently not inversed (as opposed to the float type and the map of a series)"
-                )
+                ts_val = param_map["parsed_value"]
+                negated_values = [-1.0 * v for v in ts_val.values]
+                negated_ts = type(ts_val)(ts_val.indexes, negated_values, ts_val.ignore_year, ts_val.repeat)
                 add_parameter_value(
                     target_db,
                     "node",
                     "demand",
                     param_map["alternative_name"],
                     (target_name,),
-                    param_map["parsed_value"],
+                    negated_ts,
                 )
 
             elif param_map["type"] == "float":
@@ -2830,8 +2923,10 @@ def flow_profile_method(source_db, target_db):
 
     try:
         target_db.commit_session("Added flow profile")
-    except:
-        print("commit flow profile error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit flow profile error:", e)
 
 
 def process_efficiency(source_db, target_db):
@@ -2851,12 +2946,12 @@ def process_efficiency(source_db, target_db):
             alternative_name=alt,
         )
         if not method_item:
-            method_item = source_db.get_parameter_value_item(
+            method_items = source_db.get_parameter_value_items(
                 entity_class_name="unit",
                 entity_byname=(unit_name,),
                 parameter_definition_name="conversion_method",
-                alternative_name="Base",
             )
+            method_item = method_items[0] if method_items else None
         conversion_method = method_item["parsed_value"] if method_item else "constant_efficiency"
 
         # Skip methods that use conversion_coefficient or unit_flow__unit_flow directly
@@ -2891,8 +2986,10 @@ def process_efficiency(source_db, target_db):
 
     try:
         target_db.commit_session("Added efficiency conversions")
-    except:
-        print("commit efficiency conversions error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit efficiency conversions error:", e)
 
 
 def _process_constant_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
@@ -2939,48 +3036,33 @@ def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs
     if len(operating_points) < 2:
         return
 
-    # Set operating_points and minimum_operating_point on input flows
-    op_array = {"type": "array", "data": operating_points}
+    # Set operating_points and minimum_operating_point on output flows
+    #op_array = {"type": "array", "data": operating_points}
     min_op = operating_points[0]
-    for in_node in unit_inputs:
+    for out_node in unit_outputs:
         try:
             add_parameter_value(
-                target_db, "node__to_unit", "operating_points",
-                alt, (in_node, unit_name), op_array,
+                target_db, "unit__to_node", "operating_points",
+                alt, (unit_name, out_node), api.Array(operating_points),
             )
         except RuntimeError:
             pass
         try:
             add_parameter_value(
-                target_db, "node__to_unit", "minimum_operating_point",
-                alt, (in_node, unit_name), min_op,
+                target_db, "unit__to_node", "minimum_operating_point",
+                alt, (unit_name, out_node), min_op,
             )
         except RuntimeError:
             pass
 
     # Compute incremental flow ratios for each segment
-    incremental_ratios = []
-    for i in range(len(operating_points)):
-        if i == 0:
-            incremental_ratios.append(efficiencies[0])
-        else:
-            delta_op = operating_points[i] - operating_points[i - 1]
-            if delta_op > 0:
-                incremental = (
-                    operating_points[i] * efficiencies[i]
-                    - operating_points[i - 1] * efficiencies[i - 1]
-                ) / delta_op
-            else:
-                incremental = efficiencies[i]
-            incremental_ratios.append(incremental)
-
-    ratio_array = {"type": "array", "data": incremental_ratios}
-
+    incremental_ratios = [1/eff for eff in efficiencies]
+    ratio_array = api.Array(incremental_ratios)
     for out_node in unit_outputs:
         for in_node in unit_inputs:
             if out_node == in_node:
                 continue
-            uf_byname = (unit_name, out_node, in_node, unit_name)
+            uf_byname = (in_node, unit_name, unit_name, out_node)
             try:
                 add_entity(target_db, "unit_flow__unit_flow", uf_byname)
             except RuntimeError:
@@ -3006,12 +3088,12 @@ def process_conversion_coefficients(source_db, target_db):
     for eff_param in source_db.get_parameter_value_items(
         entity_class_name="unit", parameter_definition_name="efficiency"
     ):
-        method_item = source_db.get_parameter_value_item(
+        method_items = source_db.get_parameter_value_items(
             entity_class_name="unit",
             entity_byname=eff_param["entity_byname"],
             parameter_definition_name="conversion_method",
-            alternative_name="Base",
         )
+        method_item = method_items[0] if method_items else None
         conversion_method = method_item["parsed_value"] if method_item else "constant_efficiency"
         if conversion_method not in ("coefficients_only", "piecewise_linear_for_each_flow"):
             units_with_efficiency.add(eff_param["entity_byname"][0])
@@ -3111,8 +3193,10 @@ def process_conversion_coefficients(source_db, target_db):
 
     try:
         target_db.commit_session("Added conversion coefficients")
-    except:
-        print("commit conversion coefficients error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit conversion coefficients error:", e)
 
 
 def process_constraints(source_db, target_db):
@@ -3338,8 +3422,10 @@ def process_constraints(source_db, target_db):
 
     try:
         target_db.commit_session("Added user constraints")
-    except:
-        print("commit user constraints error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit user constraints error:", e)
 
 
 def process_system_discount_rate(source_db, target_db):
@@ -3377,8 +3463,157 @@ def process_system_discount_rate(source_db, target_db):
 
     try:
         target_db.commit_session("Added system discount rate")
-    except:
-        print("commit system discount rate error")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit system discount rate error:", e)
+
+
+def process_node_penalty(source_db, target_db, default_penalty):
+    """Set balance_penalty on all nodes. Use penalty_upward if available, otherwise default."""
+    default_alt = target_db.get_alternative_items()[0]["name"]
+    for node_entity in target_db.get_entity_items(entity_class_name="node"):
+        node_name = node_entity["entity_byname"][0]
+        existing = target_db.get_parameter_value_items(
+            entity_class_name="node",
+            entity_byname=(node_name,),
+            parameter_definition_name="balance_penalty",
+        )
+        if not existing:
+            add_parameter_value(
+                target_db, "node", "balance_penalty",
+                default_alt, (node_name,), default_penalty,
+            )
+    try:
+        target_db.commit_session("Added node penalty defaults")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit node penalty defaults error:", e)
+
+
+def process_link_bidirectional(source_db, target_db):
+    """Set capacity on all connection__from_node and connection__to_node entities,
+    and efficiency on both connection__node__node entities for each link."""
+    periods_info = _get_periods_info(source_db)
+
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node__link__node", parameter_definition_name="capacity"
+    ):
+        node1, link, node2 = pv["entity_byname"]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        else:
+            continue
+        for target_class, target_byname in [
+            ("connection__from_node", (link, node1)),
+            ("connection__from_node", (link, node2)),
+            ("connection__to_node", (link, node1)),
+            ("connection__to_node", (link, node2)),
+        ]:
+            try:
+                add_parameter_value(
+                    target_db, target_class, "capacity_per_connection",
+                    alt, target_byname, value,
+                )
+            except RuntimeError:
+                pass
+
+    # Capacity from link entity
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="link", parameter_definition_name="capacity"
+    ):
+        link = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        else:
+            continue
+        for nln in source_db.get_entity_items(entity_class_name="node__link__node"):
+            if nln["entity_byname"][1] == link:
+                node1, _, node2 = nln["entity_byname"]
+                for target_class, target_byname in [
+                    ("connection__from_node", (link, node1)),
+                    ("connection__from_node", (link, node2)),
+                    ("connection__to_node", (link, node1)),
+                    ("connection__to_node", (link, node2)),
+                ]:
+                    try:
+                        add_parameter_value(
+                            target_db, target_class, "capacity_per_connection",
+                            alt, target_byname, value,
+                        )
+                    except RuntimeError:
+                        pass
+                break
+
+    # Efficiency from node__link__node entity
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node__link__node", parameter_definition_name="efficiency"
+    ):
+        node1, link, node2 = pv["entity_byname"]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        else:
+            continue
+        try:
+            add_parameter_value(
+                target_db, "connection__node__node",
+                "fix_ratio_out_in_connection_flow",
+                alt, (link, node2, node1), value,
+            )
+        except RuntimeError:
+            pass
+
+    # Efficiency from link entity
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="link", parameter_definition_name="efficiency"
+    ):
+        link = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        else:
+            continue
+        # Find associated nodes from node__link__node entities
+        for nln in source_db.get_entity_items(entity_class_name="node__link__node"):
+            if nln["entity_byname"][1] == link:
+                node1, _, node2 = nln["entity_byname"]
+                for target_byname in [(link, node2, node1), (link, node1, node2)]:
+                    try:
+                        add_parameter_value(
+                            target_db, "connection__node__node",
+                            "fix_ratio_out_in_connection_flow",
+                            alt, target_byname, value,
+                        )
+                    except RuntimeError:
+                        pass
+                break
+
+    try:
+        target_db.commit_session("Added bidirectional link capacity and efficiency")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit bidirectional link error:", e)
 
 
 if __name__ == "__main__":
