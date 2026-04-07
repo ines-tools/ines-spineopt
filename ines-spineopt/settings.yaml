@@ -41,7 +41,6 @@ map_of_periods_or_historical_to_ts:
       operational_cost: [connection_flow_cost, 1.0,[[2],[1]]]
   node:
     node:
-      flow_annual: [demand_fraction,1.0,[[1]]]
       storage_state_lower_limit: [storage_state_min_fraction, 1.0,[[1]]]
       storage_state_upper_limit: [storage_state_max_fraction, 1.0,[[1]]]
       storage_investment_cost: [storage_investment_cost,1.0,[[1]]]
@@ -50,7 +49,6 @@ map_of_periods_or_historical_to_ts:
         target: [storage_fixed_annual_cost, 1.0,[[1]]]
         operation: divide
         with: 8760
-      commodity_price: [tax_out_unit_flow,1.0,[[1]]]
       
 lifetime_to_duration:
   unit:

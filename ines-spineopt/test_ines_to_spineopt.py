@@ -84,6 +84,7 @@ def populate_source_db():
         add_ent("node", ("elec_node",))
         add_ent("node", ("gas_node",))
         add_ent("node", ("storage_node",))
+        add_ent("node", ("demand_node",))
         add_ent("unit", ("gas_plant",))
         add_ent("unit", ("wind_farm",))
         add_ent("unit", ("invest_unit",))
@@ -167,6 +168,7 @@ def populate_source_db():
         # === YAML-DRIVEN process_methods ===
         add_val("node", "node_type", ("gas_node",), "commodity")
         add_val("node", "node_type", ("storage_node",), "storage")
+        add_val("node", "node_type", ("demand_node",), "balance")
         add_val("node", "storage_investment_method", ("storage_node",), "no_limits")
         add_val("unit", "investment_method", ("invest_unit",), "no_limits")
         add_val("unit", "investment_uses_integer", ("invest_unit",), True)
@@ -208,6 +210,11 @@ def populate_source_db():
         # === flow_profile_method ===
         add_val("node", "flow_scaling_method", ("elec_node",), "use_profile_directly")
         add_val("node", "flow_profile", ("elec_node",), 100.0)
+
+        # === flow_profile_method: scale_to_annual ===
+        add_val("node", "flow_scaling_method", ("demand_node",), "scale_to_annual")
+        add_val("node", "flow_profile", ("demand_node",), -50.0)
+        add_val("node", "flow_annual", ("demand_node",), 1000.0)
 
         # === limiting_investments_notallowed ===
         add_ent("unit", ("existing_unit",))
@@ -373,6 +380,7 @@ def verify_results():
 
         # === From process_methods (YAML) ===
         ("node", "balance_type", ("gas_node",), "commodity balance_type"),
+        ("node", "balance_type", ("demand_node",), "balance node_balance"),
         ("node", "storage_investment_variable_type", ("storage_node",), "storage inv type"),
         ("node", "storage_active", ("storage_node",), "storage_active"),
         ("node", "storage_investment_count_max_cumulative", ("storage_node",), "storage inv no_limits"),
@@ -400,15 +408,15 @@ def verify_results():
         ("connection__to_node", "capacity_per_connection", ("power_line", "elec_node"), "link capacity to_node1"),
         ("connection__to_node", "capacity_per_connection", ("power_line", "gas_node"), "link capacity to_node2"),
         ("connection__node__node", "fix_ratio_out_in_connection_flow", ("power_line", "gas_node", "elec_node"), "link efficiency"),
-        ("node", "tax_out_unit_flow", ("gas_node",), "commodity_price"),
+        ("node__to_unit", "vom_cost", ("gas_node", "gas_plant"), "commodity_price"),
         ("node", "storage_investment_cost", ("storage_node",), "storage_inv_cost"),
         ("node", "storage_decommissioning_cost", ("storage_node",), "storage_salvage * -1"),
         ("node", "storage_fixed_annual_cost", ("storage_node",), "storage_fixed_cost"),
-        ("node", "demand_fraction", ("elec_node",), "flow_annual"),
         ("unit__to_node", "vom_cost", ("wind_farm", "elec_node"), "other_op_cost"),
 
         # === From flow_profile_method ===
-        ("node", "demand", ("elec_node",), "flow_profile"),
+        ("node", "demand", ("elec_node",), "flow_profile use_profile_directly"),
+        ("node", "demand", ("demand_node",), "flow_profile scale_to_annual"),
 
         # === From process_availability ===
         ("unit", "availability_factor", ("gas_plant",), "avail * profile_limit_upper"),
@@ -548,7 +556,7 @@ def verify_results():
          ("stoch_set", "low"), "stochastic weight low"),
 
         # === From process_forecasts ===
-        ("node", "tax_out_unit_flow", ("elec_node",), "commodity_price_forecasts scenario map"),
+        ("node__to_unit", "vom_cost", ("elec_node", "wind_farm"), "commodity_price_forecasts scenario map"),
         ("unit__to_node", "vom_cost", ("gas_plant", "elec_node"), "operational_cost_forecasts scenario map"),
         ("node", "storage_state_fix", ("storage_node",), "storage_state_fix_forecasts ts scenario map"),
 
@@ -561,6 +569,7 @@ def verify_results():
         ("node", "balance_penalty", ("gas_node",), "default node penalty on gas_node"),
         ("node", "balance_penalty", ("storage_node",), "default node penalty on storage_node"),
         ("node", "balance_penalty", ("fuel_node",), "default node penalty on fuel_node"),
+        ("node", "balance_penalty", ("demand_node",), "default node penalty on demand_node"),
     ]
 
     found = []

@@ -3,6 +3,8 @@ node:
     node_type:
       commodity: 
         balance_type: none
+      balance:
+        balance_type: node_balance
       storage:
         storage_investment_variable_type: linear
         storage_active: True

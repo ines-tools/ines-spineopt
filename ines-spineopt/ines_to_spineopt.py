@@ -299,6 +299,9 @@ def main():
             # node penalty defaults
             process_node_penalty(source_db, target_db, settings["node_penalty_default"])
 
+            # commodity price to node__to_unit vom_cost
+            process_commodity_price(source_db, target_db)
+
             # bidirectional link capacity and efficiency
             process_link_bidirectional(source_db, target_db)
 
@@ -317,7 +320,6 @@ def process_forecasts(source_db, target_db):
         # node__to_unit forecasts
         ("node__to_unit", "other_operational_cost_forecasts", "node__to_unit", "vom_cost", [[1], [2]], 1.0),
         # node forecasts
-        ("node", "commodity_price_forecasts", "node", "tax_out_unit_flow", [[1]], 1.0),
         ("node", "storage_state_fix_forecasts", "node", "storage_state_fix", [[1]], 1.0),
         ("node", "storage_state_lower_limit_forecasts", "node", "storage_state_min_fraction", [[1]], 1.0),
         ("node", "storage_state_upper_limit_forecasts", "node", "storage_state_max_fraction", [[1]], 1.0),
@@ -2833,17 +2835,15 @@ def flow_profile_method(source_db, target_db):
         flow_method = flow_method_items[0] if flow_method_items else None
 
         if flow_method and flow_method["parsed_value"] == "scale_to_annual":
-            target_name = param_map["entity_name"] + "-group"
-            add_entity(target_db, "node", (target_name,))
-            add_parameter_value(
-                target_db,
-                "node",
-                "balance_type",
-                alt,
-                (target_name,),
-                "none",
+            target_name = param_map["entity_name"]
+
+            # Get flow_annual for scaling
+            flow_annual_items = source_db.get_parameter_value_items(
+                entity_class_name="node",
+                entity_byname=param_map["entity_byname"],
+                parameter_definition_name="flow_annual",
             )
-            add_entity_group(target_db, "node", target_name, param_map["entity_name"])
+
             definition_condition = True
         elif flow_method and flow_method["parsed_value"] == "use_profile_directly":
             target_name = param_map["entity_name"]
@@ -2870,16 +2870,41 @@ def flow_profile_method(source_db, target_db):
                         except:
                             pass
                         steps = pd.to_timedelta(duration) / pd.to_timedelta(resolution)
-                        df_data = (
-                            -1.0
-                            * data.iloc[
-                                data.index.tolist()
-                                .index(element) : data.index.tolist()
-                                .index(element)
-                                + int(steps),
-                                data.columns.tolist().index("value"),
-                            ]
-                        ).tolist()
+                        raw_data = data.iloc[
+                            data.index.tolist()
+                            .index(element) : data.index.tolist()
+                            .index(element)
+                            + int(steps),
+                            data.columns.tolist().index("value"),
+                        ]
+
+                        # Apply scaling for scale_to_annual
+                        if flow_method and flow_method["parsed_value"] == "scale_to_annual" and flow_annual_items:
+                            flow_annual_val = flow_annual_items[0]["parsed_value"]
+                            # flow_annual can be a map (period-indexed) or float
+                            if hasattr(flow_annual_val, 'indexes'):
+                                # Map: find matching period value
+                                periods_info = _get_periods_info(source_db)
+                                annual_value = None
+                                for p_idx, p_name in enumerate(periods_info["periods"]):
+                                    if periods_info["starttime"][p_name] == element:
+                                        for fa_idx, fa_key in enumerate(flow_annual_val.indexes):
+                                            if str(fa_key) == p_name:
+                                                annual_value = float(flow_annual_val.values[fa_idx])
+                                                break
+                                        break
+                                if annual_value is None:
+                                    annual_value = float(flow_annual_val.values[0])
+                            else:
+                                annual_value = float(flow_annual_val)
+                            profile_sum = abs(raw_data.sum())
+                            if profile_sum > 0:
+                                scale_factor = annual_value / profile_sum
+                            else:
+                                scale_factor = 1.0
+                            df_data = (-1.0 * scale_factor * raw_data).tolist()
+                        else:
+                            df_data = (-1.0 * raw_data).tolist()
                         ts_export = {
                             "type": "time_series",
                             "data": df_data,
@@ -2900,15 +2925,25 @@ def flow_profile_method(source_db, target_db):
 
             elif param_map["type"] == "time_series":
                 ts_val = param_map["parsed_value"]
-                negated_values = [-1.0 * v for v in ts_val.values]
-                negated_ts = type(ts_val)(ts_val.indexes, negated_values, ts_val.ignore_year, ts_val.repeat)
+                if flow_method and flow_method["parsed_value"] == "scale_to_annual" and flow_annual_items:
+                    flow_annual_val = flow_annual_items[0]["parsed_value"]
+                    if isinstance(flow_annual_val, (int, float)):
+                        annual_value = float(flow_annual_val)
+                    else:
+                        annual_value = float(flow_annual_val.values[0])
+                    profile_sum = abs(sum(ts_val.values))
+                    scale_factor = annual_value / profile_sum if profile_sum > 0 else 1.0
+                    scaled_values = [-1.0 * scale_factor * v for v in ts_val.values]
+                else:
+                    scaled_values = [-1.0 * v for v in ts_val.values]
+                result_ts = api.TimeSeriesVariableResolution(ts_val.indexes, scaled_values, ignore_year=False, repeat=False, index_name="time step")
                 add_parameter_value(
                     target_db,
                     "node",
                     "demand",
                     param_map["alternative_name"],
                     (target_name,),
-                    negated_ts,
+                    result_ts,
                 )
 
             elif param_map["type"] == "float":
@@ -3490,6 +3525,90 @@ def process_node_penalty(source_db, target_db, default_penalty):
         pass
     except DBAPIError as e:
         print("commit node penalty defaults error:", e)
+
+
+def process_commodity_price(source_db, target_db):
+    """Map INES node.commodity_price to SpineOpt node__to_unit.vom_cost.
+
+    Also handles commodity_price_forecasts as scenario-indexed Maps.
+    """
+    periods_info = _get_periods_info(source_db)
+
+    # commodity_price (float or map)
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="commodity_price"
+    ):
+        node_name = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        else:
+            continue
+        for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
+            if ntu["entity_byname"][0] == node_name:
+                unit_name = ntu["entity_byname"][1]
+                try:
+                    add_parameter_value(
+                        target_db, "node__to_unit", "vom_cost",
+                        alt, (node_name, unit_name), value,
+                    )
+                except RuntimeError:
+                    db_val, val_type = api.to_database(value)
+                    target_db.update_parameter_value_item(
+                        entity_class_name="node__to_unit",
+                        entity_byname=(node_name, unit_name),
+                        parameter_definition_name="vom_cost",
+                        alternative_name=alt,
+                        value=db_val,
+                        type=val_type,
+                    )
+
+    # commodity_price_forecasts (scenario-indexed Map)
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="commodity_price_forecasts"
+    ):
+        if pv["type"] != "map":
+            continue
+        node_name = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        parsed = pv["parsed_value"]
+        scenario_map = Map(
+            indexes=list(parsed.indexes),
+            values=[
+                v if isinstance(v, (int, float)) else v
+                for v in parsed.values
+            ],
+            index_name="stochastic_scenario",
+        )
+        for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
+            if ntu["entity_byname"][0] == node_name:
+                unit_name = ntu["entity_byname"][1]
+                try:
+                    add_parameter_value(
+                        target_db, "node__to_unit", "vom_cost",
+                        alt, (node_name, unit_name), scenario_map,
+                    )
+                except RuntimeError:
+                    db_val, val_type = api.to_database(scenario_map)
+                    target_db.update_parameter_value_item(
+                        entity_class_name="node__to_unit",
+                        entity_byname=(node_name, unit_name),
+                        parameter_definition_name="vom_cost",
+                        alternative_name=alt,
+                        value=db_val,
+                        type=val_type,
+                    )
+
+    try:
+        target_db.commit_session("Added commodity price")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit commodity price error:", e)
 
 
 def process_link_bidirectional(source_db, target_db):
