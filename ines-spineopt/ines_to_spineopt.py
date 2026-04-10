@@ -177,38 +177,6 @@ def main():
 
 def process_emissions(source_db, target_db):
 
-    for param_map in source_db.get_parameter_value_items(entity_class_name="set", parameter_definition_name = "co2_max_cumulative"):
-        if param_map:
-            add_entity(target_db,"node",("atmosphere",))
-            add_parameter_value(target_db,"node","has_state","Base",("atmosphere",),True)
-            if param_map["type"] == "map":
-                # getting periods info
-                starttime = {} 
-                year_repr = {} 
-                for period in json.loads(source_db.get_parameter_value_items(entity_class_name = "solve_pattern", parameter_definition_name = "period")[0]["value"])["data"]:
-                    starttime[period] = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "start_time")["value"])["data"]
-                    year_repr[period] = source_db.get_parameter_value_item(entity_class_name = "period", entity_byname = (period,), alternative_name = "Base", parameter_definition_name = "years_represented")["parsed_value"]
-
-                map_table = convert_map_to_table(param_map["parsed_value"])
-                index_names = nested_index_names(param_map["parsed_value"])
-                data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
-                data.index = data.index.astype("string")
-
-                if any(i in data.index for i in starttime):
-                    indexes_ = []
-                    values_ = []
-                    for period_, ts_index_ in starttime.items():
-                        values_.append((float(data.at[period_,"value"]) if period_ in data.index else 0.0))
-                        
-                        # this should be removed once the fixed resolution is repaired
-                        indexes_.append(ts_index_)
-                    values_.append(values_[-1]) 
-                    indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
-
-                    ts_to_export = {"type": "time_series","data": dict(zip(indexes_,[i/max(values_) for i in values_]))}
-                    add_parameter_value(target_db,"node","node_availability_factor",param_map["alternative_name"],param_map["entity_byname"],ts_to_export)
-                    add_parameter_value(target_db,"node","node_state_cap",param_map["alternative_name"],param_map["entity_byname"],max(values_))
-                    
     # unit flow coming from fossil nodes
     co2_params = source_db.get_parameter_value_items(entity_class_name="node",parameter_definition_name="co2_content",alternative_name="Base")
     co2_value  = {co2_param["entity_name"]:co2_param["parsed_value"] for co2_param in co2_params if co2_param["entity_name"] != "CO2"}
@@ -228,13 +196,6 @@ def process_emissions(source_db, target_db):
             add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
             add_entity(target_db,"unit__node__node",(unit_name,"atmosphere",unit__from_nodes[0]))
             add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name,"atmosphere",unit__from_nodes[0]),co2_value[unit__from_nodes[0]])
-
-    for entity_items in [element for element in target_db.get_entity_items(entity_class_name="unit__to_node") if "CO2" in element["entity_byname"][1]]:
-        entity_byname = entity_items["entity_byname"]
-        unit_name, node_out = entity_byname
-        add_entity(target_db,"unit__from_node",(unit_name,"atmosphere"))
-        add_entity(target_db,"unit__node__node",(unit_name, node_out,"atmosphere"))
-        add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name, node_out,"atmosphere"),1.0)
 
     try:
         target_db.commit_session("Added process capacities")
@@ -405,13 +366,13 @@ def storage_state_fix_method(source_db,target_db):
         py_start = json.loads(source_db.get_parameter_value_item(entity_class_name = "period", parameter_definition_name = "start_time", alternative_name = "Base", entity_byname = (period,))["value"])["data"]
         block_starts[period] = (pd.Timestamp(py_start) + pd.Timedelta(days=366)).isoformat() if bool(pd.Timestamp(py_start).year % 4 == 0) else py_start
     for storage_method in source_db.get_parameter_value_items(parameter_definition_name = "storage_state_fix_method"):
-        capacities_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_capacity")
-        if capacities_:
-            if storage_method["parsed_value"] == "fix_start":
-                values_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_state_fix")
-                if values_:
+        
+        if storage_method["parsed_value"] == "fix_start":
+            values_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_state_fix")
+            if values_:
+                capacities_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_capacity")
+                if capacities_:
                     existings_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storages_existing")
-                    
                     for existing_ in existings_:
                         if not existing_:
                             multiplier = 1.0
@@ -454,6 +415,15 @@ def storage_state_fix_method(source_db,target_db):
                                     add_parameter_value(target_db,"node","fix_node_state",alternative_name,value_["entity_byname"],target_ts_)
                 else:
                     print("WARNING: FIXED STATE DOES NOT EXIST ", storage_method["entity_byname"])
+        
+        elif storage_method["parsed_value"] == "fix_start_and_horizon_end":
+            values_ = source_db.get_parameter_value_items(entity_class_name = storage_method["entity_class_name"], entity_byname= storage_method["entity_byname"], parameter_definition_name = "storage_state_fix")
+            if not values_:
+                for entity_map in target_db.get_entity_items(entity_class_name = "model__default_temporal_block"):
+                    add_entity(target_db,"node__temporal_block",(storage_method["entity_name"],entity_map["entity_byname"][1]))
+                    add_parameter_value(target_db,"node__temporal_block","cyclic_condition","Base",(storage_method["entity_name"],entity_map["entity_byname"][1]),True)
+                    add_parameter_value(target_db,"node__temporal_block","cyclic_condition_sense","Base",(storage_method["entity_name"],entity_map["entity_byname"][1]),"==")
+
         else:
             print("WARNING: CAPACITY NOT DEFINED, THEN FIX STATE NOT ADDED", storage_method["entity_byname"])
     try:
@@ -652,7 +622,7 @@ def lifetime_to_duration(source_db,target_db,settings):
                         param_value = {"type":"duration","data":str(int(param_map["parsed_value"]))+"Y"}
                     elif param_map["type"] == "map":
                         param_value = {"type":"duration","data":str(int(param_map["parsed_value"].values[0]))+"Y"}
-                        
+                    
                     for target_param in settings[source_class][target_class][source_param]:
                         print(target_param, param_map["entity_byname"])
                         add_parameter_value(target_db,target_class,target_param,param_map["alternative_name"],param_map["entity_byname"],param_value)
