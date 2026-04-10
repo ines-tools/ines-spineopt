@@ -426,7 +426,7 @@ def verify_results():
         # === From default_parameters (overridden by process_investment_integer) ===
         ("unit", "investment_variable_type", None, "default unit inv_var_type"),
         ("connection", "investment_variable_type", None, "default conn inv_var_type"),
-        ("model", "discount_rate", None, "default model discount_rate"),
+        ("model", "discount_rate", None, "system discount_rate"),
 
         # === From process_investment_integer ===
         ("unit", "investment_variable_type", ("invest_unit",), "unit integer investment"),
@@ -562,8 +562,11 @@ def verify_results():
 
         # === From rolling_jump / rolling_horizon ===
         ("model", "roll_forward", ("sp1",), "rolling_jump to roll_forward"),
-        ("temporal_block", "block_end", ("sp1_operations_p2025",), "rolling_horizon to block_end"),
-        ("temporal_block", "block_end", ("sp1_operations_p2030",), "rolling_horizon to block_end p2030"),
+        ("temporal_block", "block_start", ("sp1_tb0",), "tb0 block_start"),
+        ("temporal_block", "block_end", ("sp1_tb0",), "tb0 block_end"),
+        ("temporal_block", "block_start", ("sp1_tb1",), "tb1 block_start"),
+        ("temporal_block", "block_end", ("sp1_tb1",), "tb1 block_end"),
+        ("temporal_block", "resolution", ("sp1_investments",), "investment temporal block resolution"),
 
         # === Node penalty defaults ===
         ("node", "balance_penalty", ("gas_node",), "default node penalty on gas_node"),

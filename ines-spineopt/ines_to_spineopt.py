@@ -1602,6 +1602,25 @@ def _ensure_list(value):
     return [value]
 
 
+def _has_investment_parameters(source_db):
+    """Check if the INES source database has any investment parameters defined."""
+    investment_params = [
+        ("unit", "investment_cost"),
+        ("link", "investment_cost"),
+        ("node", "storage_investment_cost"),
+        ("unit", "investment_method"),
+        ("link", "investment_method"),
+        ("node", "storage_investment_method"),
+    ]
+    for entity_class, param in investment_params:
+        items = source_db.get_parameter_value_items(
+            entity_class_name=entity_class, parameter_definition_name=param,
+        )
+        if items:
+            return True
+    return False
+
+
 def timeline_setup(source_db, target_db):
 
     # Determine default alternative name from source DB
@@ -1618,6 +1637,9 @@ def timeline_setup(source_db, target_db):
         (sto_structure, sto_scenario),
     )
 
+    # Check if investment parameters exist in source DB
+    has_investments = _has_investment_parameters(source_db)
+
     # Loop over all solve_pattern entities — each becomes a model
     for sp_entity in source_db.get_entity_items(entity_class_name="solve_pattern"):
         model_name = sp_entity["name"]
@@ -1631,14 +1653,6 @@ def timeline_setup(source_db, target_db):
             "model__default_investment_stochastic_structure",
             (model_name, sto_structure),
         )
-
-        periods_value = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="solve_pattern", parameter_definition_name="period",
-                entity_byname=sp_byname,
-            )[0]["value"]
-        )["data"]
-        periods = _ensure_list(periods_value)
 
         resolution = json.loads(
             source_db.get_parameter_value_items(
@@ -1656,6 +1670,14 @@ def timeline_setup(source_db, target_db):
         )["data"]
         durations = _ensure_list(duration_value)
 
+        start_time_value = json.loads(
+            source_db.get_parameter_value_items(
+                entity_class_name="solve_pattern", parameter_definition_name="start_time",
+                entity_byname=sp_byname,
+            )[0]["value"]
+        )["data"]
+        start_times = _ensure_list(start_time_value)
+
         # rolling optimization parameters (optional)
         rolling_jump_items = source_db.get_parameter_value_items(
             entity_class_name="solve_pattern", parameter_definition_name="rolling_jump",
@@ -1668,236 +1690,84 @@ def timeline_setup(source_db, target_db):
         )
         rolling_horizon = json.loads(rolling_horizon_items[0]["value"])["data"] if rolling_horizon_items else None
 
-        # Use first duration for all periods (or match 1:1 if same length)
-        def get_duration(period_idx):
-            if len(durations) > period_idx:
-                return durations[period_idx]
+        def get_duration(idx):
+            if len(durations) > idx:
+                return durations[idx]
             return durations[0]
 
-        py_yearrs = []
-        # if not multiyear
-        if len(periods) == 1:
-            print("it is not a multiyear investment problem")
-            # model horizon
-            for i, period in enumerate(periods):
-                duration = get_duration(i)
-                py_start = json.loads(
-                    source_db.get_parameter_value_items(
-                        entity_class_name="period",
-                        parameter_definition_name="start_time",
-                        entity_byname=(period,),
-                    )[0]["value"]
-                )["data"]
-                py_yearr = source_db.get_parameter_value_items(
-                    entity_class_name="period",
-                    parameter_definition_name="years_represented",
-                    entity_byname=(period,),
-                )[0]["parsed_value"]
-                py_yearrs.append(py_yearr)
-                print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
-                extra_duration = (
-                    pd.Timedelta("1D")
-                    if pd.Timestamp(py_start).year % 4 == 0
-                    else pd.Timedelta("0h")
-                )
-                py_end = (
-                    pd.Timestamp(py_start) + pd.Timedelta(duration) + extra_duration
-                ).isoformat()
-                add_parameter_value(
-                    target_db,
-                    "model",
-                    "model_start",
-                    default_alt,
-                    (model_name,),
-                    {"type": "date_time", "data": py_start},
-                )
-                add_parameter_value(
-                    target_db,
-                    "model",
-                    "model_end",
-                    default_alt,
-                    (model_name,),
-                    {"type": "date_time", "data": py_end},
-                )
+        # Create one temporal block per start_time
+        all_starts = []
+        all_ends = []
+        for i, st in enumerate(start_times):
+            duration = get_duration(i)
+            block_start = pd.Timestamp(st)
+            block_end = block_start + pd.Timedelta(duration)
+            all_starts.append(block_start)
+            all_ends.append(block_end)
 
-                # operational_resolution
-                temporal_block_name = f"{model_name}_operations"
-                add_entity(target_db, "temporal_block", (temporal_block_name,))
-                add_entity(
-                    target_db,
-                    "model__default_temporal_block",
-                    (model_name, temporal_block_name),
-                )
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "resolution",
-                    default_alt,
-                    (temporal_block_name,),
-                    {"type": "duration", "data": resolution},
-                )
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "weight",
-                    default_alt,
-                    (temporal_block_name,),
-                    py_yearr,
-                )
-                if rolling_horizon is not None:
-                    add_parameter_value(
-                        target_db,
-                        "temporal_block",
-                        "block_end",
-                        default_alt,
-                        (temporal_block_name,),
-                        {"type": "duration", "data": rolling_horizon},
-                    )
-
-        else:
-            print("Multiyear investment planning")
-            py_starts = []
-            py_ends = []
-            py_yearrs = []
-            # model horizon
-            for i, period in enumerate(periods):
-                duration = get_duration(i)
-                # add_alternative(target_db,period)
-                py_start = json.loads(
-                    source_db.get_parameter_value_items(
-                        entity_class_name="period",
-                        parameter_definition_name="start_time",
-                        entity_byname=(period,),
-                    )[0]["value"]
-                )["data"]
-                py_yearr = source_db.get_parameter_value_items(
-                    entity_class_name="period",
-                    parameter_definition_name="years_represented",
-                    entity_byname=(period,),
-                )[0]["parsed_value"]
-                py_yearrs.append(py_yearr)
-                # operational_resolution
-                temporal_block_name = f"{model_name}_operations_{period}"
-                add_entity(target_db, "temporal_block", (temporal_block_name,))
-                add_entity(
-                    target_db,
-                    "model__default_temporal_block",
-                    (model_name, temporal_block_name),
-                )
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "resolution",
-                    default_alt,
-                    (temporal_block_name,),
-                    {"type": "duration", "data": resolution},
-                )
-                if bool(pd.Timestamp(py_start).year % 4 == 0):
-                    print("Leap Year: ", bool(pd.Timestamp(py_start).year % 4 == 0), period)
-                    block_start = (
-                        pd.Timestamp(py_start)
-                        + pd.Timedelta(days=366)
-                        - (
-                            pd.Timedelta(resolution)
-                            if i > 0
-                            else pd.Timedelta("0h")
-                        )
-                    ).isoformat()
-                    block_end = (
-                        pd.Timestamp(py_start)
-                        + pd.Timedelta(days=366)
-                        + pd.Timedelta(duration)
-                    ).isoformat()
-                else:
-                    block_start = (pd.Timestamp(py_start)).isoformat()
-                    block_end = (
-                        pd.Timestamp(py_start) + pd.Timedelta(duration)
-                    ).isoformat()
-
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "block_start",
-                    default_alt,
-                    (temporal_block_name,),
-                    {"type": "date_time", "data": block_start},
-                )
-                if rolling_horizon is not None:
-                    add_parameter_value(
-                        target_db,
-                        "temporal_block",
-                        "block_end",
-                        default_alt,
-                        (temporal_block_name,),
-                        {"type": "duration", "data": rolling_horizon},
-                    )
-                else:
-                    add_parameter_value(
-                        target_db,
-                        "temporal_block",
-                        "block_end",
-                        default_alt,
-                        (temporal_block_name,),
-                        {"type": "date_time", "data": block_end},
-                    )
-                add_parameter_value(
-                    target_db,
-                    "temporal_block",
-                    "weight",
-                    default_alt,
-                    (temporal_block_name,),
-                    py_yearr,
-                )
-
-                py_starts.append(pd.Timestamp(py_start))
-                py_ends.append(
-                    pd.Timestamp(str(int(py_start[:4]) + int(py_yearr)) + "-01-01T00:00:00")
-                )
-
-            add_parameter_value(
+            temporal_block_name = f"{model_name}_tb{i}"
+            add_entity(target_db, "temporal_block", (temporal_block_name,))
+            add_entity(
                 target_db,
-                "model",
-                "model_start",
-                default_alt,
-                (model_name,),
-                {"type": "date_time", "data": min(py_starts).isoformat()},
+                "model__default_temporal_block",
+                (model_name, temporal_block_name),
             )
             add_parameter_value(
-                target_db,
-                "model",
-                "model_end",
-                default_alt,
-                (model_name,),
-                {"type": "date_time", "data": max(py_ends).isoformat()},
+                target_db, "temporal_block", "resolution",
+                default_alt, (temporal_block_name,),
+                {"type": "duration", "data": resolution},
             )
-            # add_parameter_value(target_db,"model","discount_year",period,(model_name,),{"type":"date_time","data":py_start})
+            add_parameter_value(
+                target_db, "temporal_block", "block_start",
+                default_alt, (temporal_block_name,),
+                {"type": "date_time", "data": block_start.isoformat()},
+            )
+            if rolling_horizon is not None:
+                add_parameter_value(
+                    target_db, "temporal_block", "block_end",
+                    default_alt, (temporal_block_name,),
+                    {"type": "duration", "data": rolling_horizon},
+                )
+            else:
+                add_parameter_value(
+                    target_db, "temporal_block", "block_end",
+                    default_alt, (temporal_block_name,),
+                    {"type": "date_time", "data": block_end.isoformat()},
+                )
+
+        # Model start/end from min/max of temporal blocks
+        add_parameter_value(
+            target_db, "model", "model_start",
+            default_alt, (model_name,),
+            {"type": "date_time", "data": min(all_starts).isoformat()},
+        )
+        add_parameter_value(
+            target_db, "model", "model_end",
+            default_alt, (model_name,),
+            {"type": "date_time", "data": max(all_ends).isoformat()},
+        )
 
         if rolling_jump is not None:
             add_parameter_value(
-                target_db,
-                "model",
-                "roll_forward",
-                default_alt,
-                (model_name,),
+                target_db, "model", "roll_forward",
+                default_alt, (model_name,),
                 {"type": "duration", "data": rolling_jump},
             )
 
-        # investment_resolution # should not be created if there are only operational parameters in the database
-        temporal_block_name = f"{model_name}_planning"
-        add_entity(target_db, "temporal_block", (temporal_block_name,))
-        add_entity(
-            target_db,
-            "model__default_investment_temporal_block",
-            (model_name, temporal_block_name),
-        )
-        add_parameter_value(
-            target_db,
-            "temporal_block",
-            "resolution",
-            default_alt,
-            (temporal_block_name,),
-            {"type": "duration", "data": resolution},
-        )
+        # Investment temporal block (if investment parameters exist)
+        if has_investments:
+            inv_tb_name = f"{model_name}_investments"
+            add_entity(target_db, "temporal_block", (inv_tb_name,))
+            add_entity(
+                target_db,
+                "model__default_investment_temporal_block",
+                (model_name, inv_tb_name),
+            )
+            add_parameter_value(
+                target_db, "temporal_block", "resolution",
+                default_alt, (inv_tb_name,),
+                {"type": "duration", "data": durations[0]},
+            )
 
     try:
         target_db.commit_session("Added timeline")
@@ -2834,6 +2704,7 @@ def flow_profile_method(source_db, target_db):
         )
         flow_method = flow_method_items[0] if flow_method_items else None
 
+        flow_annual_items = None
         if flow_method and flow_method["parsed_value"] == "scale_to_annual":
             target_name = param_map["entity_name"]
 
@@ -2849,8 +2720,8 @@ def flow_profile_method(source_db, target_db):
             target_name = param_map["entity_name"]
             definition_condition = True
         else:
-            print("flow profile wont be defined")
-            definition_condition = False
+            target_name = param_map["entity_name"]
+            definition_condition = True
 
         if definition_condition:
             if param_map["type"] == "map":
@@ -2898,8 +2769,12 @@ def flow_profile_method(source_db, target_db):
                             else:
                                 annual_value = float(flow_annual_val)
                             profile_sum = abs(raw_data.sum())
-                            if profile_sum > 0:
-                                scale_factor = annual_value / profile_sum
+                            num_steps = len(raw_data)
+                            ts_duration = num_steps * pd.to_timedelta(resolution)
+                            year_factor = pd.to_timedelta("8760h") / ts_duration
+                            profile_sum_annual = profile_sum * year_factor
+                            if profile_sum_annual > 0:
+                                scale_factor = annual_value / profile_sum_annual
                             else:
                                 scale_factor = 1.0
                             df_data = (-1.0 * scale_factor * raw_data).tolist()
@@ -2932,7 +2807,14 @@ def flow_profile_method(source_db, target_db):
                     else:
                         annual_value = float(flow_annual_val.values[0])
                     profile_sum = abs(sum(ts_val.values))
-                    scale_factor = annual_value / profile_sum if profile_sum > 0 else 1.0
+                    ts_timestamps = [pd.Timestamp(t) for t in ts_val.indexes]
+                    if len(ts_timestamps) > 1:
+                        ts_duration = ts_timestamps[-1] - ts_timestamps[0] + (ts_timestamps[1] - ts_timestamps[0])
+                    else:
+                        ts_duration = pd.to_timedelta(resolution)
+                    year_factor = pd.to_timedelta("8760h") / ts_duration
+                    profile_sum_annual = profile_sum * year_factor
+                    scale_factor = annual_value / profile_sum_annual if profile_sum_annual > 0 else 1.0
                     scaled_values = [-1.0 * scale_factor * v for v in ts_val.values]
                 else:
                     scaled_values = [-1.0 * v for v in ts_val.values]
@@ -2947,13 +2829,29 @@ def flow_profile_method(source_db, target_db):
                 )
 
             elif param_map["type"] == "float":
+                value = param_map["parsed_value"]
+                if flow_method and flow_method["parsed_value"] == "scale_to_annual" and flow_annual_items:
+                    flow_annual_val = flow_annual_items[0]["parsed_value"]
+                    if isinstance(flow_annual_val, (int, float)):
+                        annual_value = float(flow_annual_val)
+                    else:
+                        annual_value = float(flow_annual_val.values[0])
+                    num_steps_year = pd.to_timedelta("8760h") / pd.to_timedelta(resolution)
+                    profile_sum_annual = abs(value) * num_steps_year
+                    if profile_sum_annual > 0:
+                        scale_factor = annual_value / profile_sum_annual
+                    else:
+                        scale_factor = 1.0
+                    demand_value = -1.0 * scale_factor * value
+                else:
+                    demand_value = -1.0 * value
                 add_parameter_value(
                     target_db,
                     "node",
                     "demand",
                     param_map["alternative_name"],
                     (target_name,),
-                    -1.0 * param_map["parsed_value"],
+                    demand_value,
                 )
 
     try:
@@ -3464,37 +3362,57 @@ def process_constraints(source_db, target_db):
 
 
 def process_system_discount_rate(source_db, target_db):
-    """Map INES system discount_rate to SpineOpt model discount_rate."""
+    """Map INES system discount_rate to SpineOpt model discount_rate.
 
+    Priority: 1) system entity parameter value, 2) DB default value, 3) skip.
+    """
     model_entities = target_db.get_entity_items(entity_class_name="model")
     if not model_entities:
         return
 
-    model_name = model_entities[0]["name"]
+    default_alt = target_db.get_alternative_items()[0]["name"]
 
-    for param in source_db.get_parameter_value_items(
+    # Try to get discount_rate from the INES system entity
+    system_params = source_db.get_parameter_value_items(
         entity_class_name="system", parameter_definition_name="discount_rate"
-    ):
-        if param["parsed_value"] is not None:
-            # Override default discount rate with actual value from source
-            try:
-                target_db.update_parameter_value_item(
-                    entity_class_name="model",
-                    entity_byname=(model_name,),
-                    parameter_definition_name="discount_rate",
-                    alternative_name=param["alternative_name"],
-                    value=api.to_database(param["parsed_value"])[0],
-                    type=api.to_database(param["parsed_value"])[1],
-                )
-            except:
-                add_parameter_value(
-                    target_db,
-                    "model",
-                    "discount_rate",
-                    param["alternative_name"],
-                    (model_name,),
-                    param["parsed_value"],
-                )
+    )
+    if system_params:
+        for param in system_params:
+            if param["parsed_value"] is not None:
+                for model_ent in model_entities:
+                    model_name = model_ent["name"]
+                    try:
+                        add_parameter_value(
+                            target_db, "model", "discount_rate",
+                            param["alternative_name"], (model_name,),
+                            param["parsed_value"],
+                        )
+                    except RuntimeError:
+                        db_val, val_type = api.to_database(param["parsed_value"])
+                        target_db.update_parameter_value_item(
+                            entity_class_name="model",
+                            entity_byname=(model_name,),
+                            parameter_definition_name="discount_rate",
+                            alternative_name=param["alternative_name"],
+                            value=db_val,
+                            type=val_type,
+                        )
+    else:
+        # Try to get the default value from the source DB parameter definition
+        param_defs = source_db.get_parameter_definition_items(
+            entity_class_name="system", parameter_definition_name="discount_rate"
+        )
+        if param_defs and param_defs[0]["parsed_value"] is not None:
+            default_value = param_defs[0]["parsed_value"]
+            for model_ent in model_entities:
+                model_name = model_ent["name"]
+                try:
+                    add_parameter_value(
+                        target_db, "model", "discount_rate",
+                        default_alt, (model_name,), default_value,
+                    )
+                except RuntimeError:
+                    pass
 
     try:
         target_db.commit_session("Added system discount rate")

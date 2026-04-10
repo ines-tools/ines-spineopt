@@ -5,8 +5,7 @@ default_parameters:
     investment_variable_type: linear
   connection:
     investment_variable_type: linear
-  model:
-    discount_rate: 0.05
+  # model:
     # use_economic_representation: True
 
 map_of_periods_or_historical_to_ts:
