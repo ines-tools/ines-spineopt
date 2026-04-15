@@ -513,15 +513,11 @@ def process_stochastic_structure(source_db, target_db):
 def process_reserves(source_db, target_db):
     """Map INES reserve entities and parameters to SpineOpt node-based reserves."""
 
-    # 1. Create a node for each INES reserve entity, set reserve flags based on reserve_type
-    for reserve_ent in source_db.get_entity_items(entity_class_name="reserve"):
-        reserve_name = reserve_ent["entity_byname"][0]
-        try:
-            add_entity(target_db, "node", (reserve_name,))
-        except RuntimeError:
-            pass
+    # Build mapping: INES reserve name → list of (spineopt_node_name, direction)
+    # For upward/downward: single node with original name
+    # For symmetric: two nodes {name}_up and {name}_down
+    reserve_nodes = {}  # {ines_reserve_name: [(spineopt_node, direction), ...]}
 
-    # Set reserve flags from reserve_type
     for pv in source_db.get_parameter_value_items(
         entity_class_name="reserve", parameter_definition_name="reserve_type"
     ):
@@ -529,36 +525,59 @@ def process_reserves(source_db, target_db):
         alt = pv["alternative_name"]
         rtype = pv["parsed_value"]
 
-        add_parameter_value(target_db, "node", "reserve_active", alt, (reserve_name,), True)
-        add_parameter_value(target_db, "node", "balance_sense", alt, (reserve_name,), ">=")
-        add_parameter_value(target_db, "node", "balance_type", alt, (reserve_name,), "none")
-
-        if rtype == "upward":
-            add_parameter_value(target_db, "node", "reserve_upward", alt, (reserve_name,), True)
+        if rtype == "symmetric":
+            up_name = reserve_name + "_up"
+            down_name = reserve_name + "_down"
+            reserve_nodes[reserve_name] = [(up_name, "upward"), (down_name, "downward")]
+        elif rtype == "upward":
+            reserve_nodes[reserve_name] = [(reserve_name, "upward")]
         elif rtype == "downward":
-            add_parameter_value(target_db, "node", "reserve_downward", alt, (reserve_name,), True)
-        elif rtype == "symmetric":
-            add_parameter_value(target_db, "node", "reserve_upward", alt, (reserve_name,), True)
-            add_parameter_value(target_db, "node", "reserve_downward", alt, (reserve_name,), True)
+            reserve_nodes[reserve_name] = [(reserve_name, "downward")]
 
-    # 2. node__reserve.reserve_requirement → node.demand on the reserve node
+    # 1. Create nodes and set reserve flags
+    for reserve_name, node_list in reserve_nodes.items():
+        # Get alternative from reserve_type parameter
+        pv = source_db.get_parameter_value_items(
+            entity_class_name="reserve", parameter_definition_name="reserve_type",
+            entity_byname=(reserve_name,),
+        )[0]
+        alt = pv["alternative_name"]
+
+        for node_name, direction in node_list:
+            try:
+                add_entity(target_db, "node", (node_name,))
+            except RuntimeError:
+                pass
+            add_parameter_value(target_db, "node", "reserve_active", alt, (node_name,), True)
+            add_parameter_value(target_db, "node", "balance_sense", alt, (node_name,), ">=")
+            add_parameter_value(target_db, "node", "balance_type", alt, (node_name,), "none")
+            if direction == "upward":
+                add_parameter_value(target_db, "node", "reserve_upward", alt, (node_name,), True)
+            elif direction == "downward":
+                add_parameter_value(target_db, "node", "reserve_downward", alt, (node_name,), True)
+
+    # 2. node__reserve.reserve_requirement → node.demand on reserve node(s)
     for pv in source_db.get_parameter_value_items(
         entity_class_name="node__reserve", parameter_definition_name="reserve_requirement"
     ):
         reserve_name = pv["entity_byname"][1]
         alt = pv["alternative_name"]
-        add_parameter_value(
-            target_db, "node", "demand", alt, (reserve_name,), pv["parsed_value"]
-        )
+        if reserve_name in reserve_nodes:
+            for node_name, _ in reserve_nodes[reserve_name]:
+                add_parameter_value(
+                    target_db, "node", "demand", alt, (node_name,), pv["parsed_value"]
+                )
 
-    # 3. unit__node__reserve → unit__to_node(unit, reserve) relationships and parameters
+    # 3. unit__node__reserve → unit__to_node(unit, reserve_node) relationships and parameters
     for ent in source_db.get_entity_items(entity_class_name="unit__node__reserve"):
         unit_name = ent["entity_byname"][0]
         reserve_name = ent["entity_byname"][2]
-        try:
-            add_entity(target_db, "unit__to_node", (unit_name, reserve_name))
-        except RuntimeError:
-            pass
+        if reserve_name in reserve_nodes:
+            for node_name, _ in reserve_nodes[reserve_name]:
+                try:
+                    add_entity(target_db, "unit__to_node", (unit_name, node_name))
+                except RuntimeError:
+                    pass
 
     # unit__node__reserve.reservation_cost → unit__to_node.reserve_procurement_cost
     for pv in source_db.get_parameter_value_items(
@@ -567,10 +586,12 @@ def process_reserves(source_db, target_db):
         unit_name = pv["entity_byname"][0]
         reserve_name = pv["entity_byname"][2]
         alt = pv["alternative_name"]
-        add_parameter_value(
-            target_db, "unit__to_node", "reserve_procurement_cost",
-            alt, (unit_name, reserve_name), pv["parsed_value"],
-        )
+        if reserve_name in reserve_nodes:
+            for node_name, _ in reserve_nodes[reserve_name]:
+                add_parameter_value(
+                    target_db, "unit__to_node", "reserve_procurement_cost",
+                    alt, (unit_name, node_name), pv["parsed_value"],
+                )
 
     # unit__node__reserve.max_reserve_provision × capacity → unit__to_node.capacity_per_unit
     for pv in source_db.get_parameter_value_items(
@@ -599,19 +620,23 @@ def process_reserves(source_db, target_db):
                 break
         if capacity_val is not None:
             reserve_capacity = share * capacity_val
-            add_parameter_value(
-                target_db, "unit__to_node", "capacity_per_unit",
-                alt, (unit_name, reserve_name), reserve_capacity,
-            )
+            if reserve_name in reserve_nodes:
+                for res_node, _ in reserve_nodes[reserve_name]:
+                    add_parameter_value(
+                        target_db, "unit__to_node", "capacity_per_unit",
+                        alt, (unit_name, res_node), reserve_capacity,
+                    )
 
-    # 4. link__node__reserve → connection__to_node(link, reserve) relationships and parameters
+    # 4. link__node__reserve → connection__to_node(link, reserve_node) relationships and parameters
     for ent in source_db.get_entity_items(entity_class_name="link__node__reserve"):
         link_name = ent["entity_byname"][0]
         reserve_name = ent["entity_byname"][2]
-        try:
-            add_entity(target_db, "connection__to_node", (link_name, reserve_name))
-        except RuntimeError:
-            pass
+        if reserve_name in reserve_nodes:
+            for node_name, _ in reserve_nodes[reserve_name]:
+                try:
+                    add_entity(target_db, "connection__to_node", (link_name, node_name))
+                except RuntimeError:
+                    pass
 
     # link__node__reserve.reservation_cost → connection__to_node.reserve_procurement_cost
     for pv in source_db.get_parameter_value_items(
@@ -620,10 +645,12 @@ def process_reserves(source_db, target_db):
         link_name = pv["entity_byname"][0]
         reserve_name = pv["entity_byname"][2]
         alt = pv["alternative_name"]
-        add_parameter_value(
-            target_db, "connection__to_node", "reserve_procurement_cost",
-            alt, (link_name, reserve_name), pv["parsed_value"],
-        )
+        if reserve_name in reserve_nodes:
+            for node_name, _ in reserve_nodes[reserve_name]:
+                add_parameter_value(
+                    target_db, "connection__to_node", "reserve_procurement_cost",
+                    alt, (link_name, node_name), pv["parsed_value"],
+                )
 
     try:
         target_db.commit_session("Added reserves")
@@ -634,13 +661,65 @@ def process_reserves(source_db, target_db):
 
 
 def process_investment_integer(source_db, target_db):
-    """Map INES investment_uses_integer (boolean) to SpineOpt investment_variable_type ('integer')."""
-    mappings = [
+    """Set investment_variable_type for entities with investment parameters.
+
+    Sets 'linear' by default for any entity that has an investment_method or investment_cost.
+    Overrides to 'integer' if investment_uses_integer is True.
+    """
+    # First pass: set 'linear' for all entities with investment parameters
+    investment_indicators = [
+        ("unit", ["investment_method", "investment_cost"], "unit", "investment_variable_type"),
+        ("link", ["investment_method", "investment_cost"], "connection", "investment_variable_type"),
+        ("node", ["storage_investment_method", "storage_investment_cost"], "node", "storage_investment_variable_type"),
+    ]
+    # Also check flow-level investment_cost to identify units with investments
+    flow_investment_indicators = [
+        ("unit__to_node", "investment_cost", "unit", "investment_variable_type", 0),
+        ("node__to_unit", "investment_cost", "unit", "investment_variable_type", 1),
+    ]
+    entities_with_investments = set()  # (target_class, entity_byname)
+    for source_class, indicator_params, target_class, target_param in investment_indicators:
+        for ind_param in indicator_params:
+            for pv in source_db.get_parameter_value_items(
+                entity_class_name=source_class,
+                parameter_definition_name=ind_param,
+            ):
+                key = (target_class, pv["entity_byname"], target_param)
+                if key not in entities_with_investments:
+                    entities_with_investments.add(key)
+                    alt = pv["alternative_name"]
+                    try:
+                        add_parameter_value(
+                            target_db, target_class, target_param,
+                            alt, pv["entity_byname"], "linear",
+                        )
+                    except RuntimeError:
+                        pass  # already set
+    for source_class, ind_param, target_class, target_param, unit_idx in flow_investment_indicators:
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name=source_class,
+            parameter_definition_name=ind_param,
+        ):
+            unit_byname = (pv["entity_byname"][unit_idx],)
+            key = (target_class, unit_byname, target_param)
+            if key not in entities_with_investments:
+                entities_with_investments.add(key)
+                alt = pv["alternative_name"]
+                try:
+                    add_parameter_value(
+                        target_db, target_class, target_param,
+                        alt, unit_byname, "linear",
+                    )
+                except RuntimeError:
+                    pass
+
+    # Second pass: override to 'integer' where investment_uses_integer is True
+    integer_mappings = [
         ("unit", "investment_uses_integer", "unit", "investment_variable_type"),
         ("link", "investment_uses_integer", "connection", "investment_variable_type"),
         ("node", "storage_investment_uses_integer", "node", "storage_investment_variable_type"),
     ]
-    for source_class, source_param, target_class, target_param in mappings:
+    for source_class, source_param, target_class, target_param in integer_mappings:
         for pv in source_db.get_parameter_value_items(
             entity_class_name=source_class,
             parameter_definition_name=source_param,
@@ -2371,6 +2450,8 @@ def set_to_entities_and_parameters(source_db, target_db):
 
 
 def default_parameters(target_db, settings):
+    if not settings:
+        return
     default_alt = target_db.get_alternative_items()[0]["name"]
     for target_entity_class in settings:
         for entity_item in target_db.get_entity_items(
@@ -3400,7 +3481,7 @@ def process_system_discount_rate(source_db, target_db):
     else:
         # Try to get the default value from the source DB parameter definition
         param_defs = source_db.get_parameter_definition_items(
-            entity_class_name="system", parameter_definition_name="discount_rate"
+            entity_class_name="system", name="discount_rate"
         )
         if param_defs and param_defs[0]["parsed_value"] is not None:
             default_value = param_defs[0]["parsed_value"]
@@ -3423,10 +3504,20 @@ def process_system_discount_rate(source_db, target_db):
 
 
 def process_node_penalty(source_db, target_db, default_penalty):
-    """Set balance_penalty on all nodes. Use penalty_upward if available, otherwise default."""
+    """Set balance_penalty on all nodes. Use penalty_upward if available, otherwise default.
+    Skips commodity nodes (node_type: commodity)."""
     default_alt = target_db.get_alternative_items()[0]["name"]
+    # Collect commodity node names to exclude
+    commodity_nodes = set()
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="node_type"
+    ):
+        if pv["parsed_value"] == "commodity":
+            commodity_nodes.add(pv["entity_byname"][0])
     for node_entity in target_db.get_entity_items(entity_class_name="node"):
         node_name = node_entity["entity_byname"][0]
+        if node_name in commodity_nodes:
+            continue
         existing = target_db.get_parameter_value_items(
             entity_class_name="node",
             entity_byname=(node_name,),
@@ -3607,14 +3698,15 @@ def process_link_bidirectional(source_db, target_db):
             value = pv["parsed_value"]
         else:
             continue
-        try:
-            add_parameter_value(
-                target_db, "connection__node__node",
-                "fix_ratio_out_in_connection_flow",
-                alt, (link, node2, node1), value,
-            )
-        except RuntimeError:
-            pass
+        for target_byname in [(link, node2, node1), (link, node1, node2)]:
+            try:
+                add_parameter_value(
+                    target_db, "connection__node__node",
+                    "fix_ratio_out_in_connection_flow",
+                    alt, target_byname, value,
+                )
+            except RuntimeError:
+                pass
 
     # Efficiency from link entity
     for pv in source_db.get_parameter_value_items(

@@ -1,10 +1,6 @@
 node_penalty_default: 10000
 
-default_parameters:
-  unit:
-    investment_variable_type: linear
-  connection:
-    investment_variable_type: linear
+default_parameters: {}
   # model:
     # use_economic_representation: True
 

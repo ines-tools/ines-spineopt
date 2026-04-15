@@ -120,8 +120,11 @@ def populate_source_db():
         add_ent("unit__to_node", ("ts_profile_unit", "elec_node"))
         # Reserve test entities
         add_ent("reserve", ("up_reserve",))
+        add_ent("reserve", ("sym_reserve",))
         add_ent("node__reserve", ("elec_node", "up_reserve"))
+        add_ent("node__reserve", ("elec_node", "sym_reserve"))
         add_ent("unit__node__reserve", ("gas_plant", "elec_node", "up_reserve"))
+        add_ent("unit__node__reserve", ("gas_plant", "elec_node", "sym_reserve"))
         # Stochastic test entities
         add_ent("set", ("stoch_set",))
         add_ent("set__node", ("stoch_set", "elec_node"))
@@ -312,6 +315,10 @@ def populate_source_db():
         add_val("unit__node__reserve", "reservation_cost", ("gas_plant", "elec_node", "up_reserve"), 5.0)
         add_val("unit__node__reserve", "max_reserve_provision", ("gas_plant", "elec_node", "up_reserve"), 0.5)
 
+        add_val("reserve", "reserve_type", ("sym_reserve",), "symmetric")
+        add_val("node__reserve", "reserve_requirement", ("elec_node", "sym_reserve"), 15.0)
+        add_val("unit__node__reserve", "reservation_cost", ("gas_plant", "elec_node", "sym_reserve"), 3.0)
+
         # === process_stochastic_structure ===
         add_val("solve_pattern", "stochastic_scope", ("sp1",), "whole_model")
         add_val("set", "stochastic_method", ("stoch_set",), "interpolate_time_series_forecasts")
@@ -407,7 +414,8 @@ def verify_results():
         ("connection__from_node", "capacity_per_connection", ("power_line", "gas_node"), "link capacity from_node2"),
         ("connection__to_node", "capacity_per_connection", ("power_line", "elec_node"), "link capacity to_node1"),
         ("connection__to_node", "capacity_per_connection", ("power_line", "gas_node"), "link capacity to_node2"),
-        ("connection__node__node", "fix_ratio_out_in_connection_flow", ("power_line", "gas_node", "elec_node"), "link efficiency"),
+        ("connection__node__node", "fix_ratio_out_in_connection_flow", ("power_line", "gas_node", "elec_node"), "link efficiency dir1"),
+        ("connection__node__node", "fix_ratio_out_in_connection_flow", ("power_line", "elec_node", "gas_node"), "link efficiency dir2"),
         ("node__to_unit", "vom_cost", ("gas_node", "gas_plant"), "commodity_price"),
         ("node", "storage_investment_cost", ("storage_node",), "storage_inv_cost"),
         ("node", "storage_decommissioning_cost", ("storage_node",), "storage_salvage * -1"),
@@ -423,15 +431,13 @@ def verify_results():
         ("unit", "availability_factor", ("wind_farm",), "availability map only"),
         ("unit", "availability_factor", ("ts_profile_unit",), "avail float * profile_limit_upper ts"),
 
-        # === From default_parameters (overridden by process_investment_integer) ===
-        ("unit", "investment_variable_type", None, "default unit inv_var_type"),
-        ("connection", "investment_variable_type", None, "default conn inv_var_type"),
-        ("model", "discount_rate", None, "system discount_rate"),
-
-        # === From process_investment_integer ===
+        # === From process_investment_integer (linear default + integer override) ===
         ("unit", "investment_variable_type", ("invest_unit",), "unit integer investment"),
+        ("unit", "investment_variable_type", ("gas_plant",), "unit linear investment (has inv_cost)"),
+        ("unit", "investment_variable_type", ("existing_unit",), "unit linear investment (has inv_method)"),
         ("connection", "investment_variable_type", ("power_line",), "conn integer investment"),
         ("node", "storage_investment_variable_type", ("storage_node",), "node integer storage investment"),
+        ("model", "discount_rate", None, "system discount_rate"),
 
         # === From process_invest_period (period path, Base) ===
         ("unit", "investment_count_max_cumulative", ("gas_plant",), "unit invest_max_period"),
@@ -548,6 +554,17 @@ def verify_results():
          ("gas_plant", "up_reserve"), "reserve procurement cost"),
         ("unit__to_node", "capacity_per_unit",
          ("gas_plant", "up_reserve"), "reserve capacity from max_provision * capacity"),
+        # symmetric reserve creates two nodes
+        ("node", "reserve_active", ("sym_reserve_up",), "sym reserve_active up"),
+        ("node", "reserve_upward", ("sym_reserve_up",), "sym reserve_upward"),
+        ("node", "reserve_active", ("sym_reserve_down",), "sym reserve_active down"),
+        ("node", "reserve_downward", ("sym_reserve_down",), "sym reserve_downward"),
+        ("node", "demand", ("sym_reserve_up",), "sym reserve demand up"),
+        ("node", "demand", ("sym_reserve_down",), "sym reserve demand down"),
+        ("unit__to_node", "reserve_procurement_cost",
+         ("gas_plant", "sym_reserve_up"), "sym reserve cost up"),
+        ("unit__to_node", "reserve_procurement_cost",
+         ("gas_plant", "sym_reserve_down"), "sym reserve cost down"),
 
         # === From process_stochastic_structure ===
         ("stochastic_structure__stochastic_scenario", "weight_relative_to_parents",
@@ -569,7 +586,6 @@ def verify_results():
         ("temporal_block", "resolution", ("sp1_investments",), "investment temporal block resolution"),
 
         # === Node penalty defaults ===
-        ("node", "balance_penalty", ("gas_node",), "default node penalty on gas_node"),
         ("node", "balance_penalty", ("storage_node",), "default node penalty on storage_node"),
         ("node", "balance_penalty", ("fuel_node",), "default node penalty on fuel_node"),
         ("node", "balance_penalty", ("demand_node",), "default node penalty on demand_node"),

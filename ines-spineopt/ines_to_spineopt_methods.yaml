@@ -6,7 +6,6 @@ node:
       balance:
         balance_type: node_balance
       storage:
-        storage_investment_variable_type: linear
         storage_active: True
     storage_investment_method:
       no_limits: 
