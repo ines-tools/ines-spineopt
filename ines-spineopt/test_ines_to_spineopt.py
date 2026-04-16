@@ -213,6 +213,8 @@ def populate_source_db():
         # === flow_profile_method ===
         add_val("node", "flow_scaling_method", ("elec_node",), "use_profile_directly")
         add_val("node", "flow_profile", ("elec_node",), 100.0)
+        profile_forecasts = {"type": "map", "index_type": "str", "data": {"high": 120.0, "low": 80.0}}
+        add_val("node", "flow_profile_forecasts", ("elec_node",), profile_forecasts)
 
         # === flow_profile_method: scale_to_annual ===
         add_val("node", "flow_scaling_method", ("demand_node",), "scale_to_annual")
@@ -326,6 +328,9 @@ def populate_source_db():
         add_val("set", "stochastic_forecast_weights", ("stoch_set",), forecast_weights)
 
         # === process_forecasts ===
+        # Base (realization) values for forecast parameters
+        add_val("node", "commodity_price", ("elec_node",), 40.0)
+        add_val("unit__to_node", "other_operational_cost", ("gas_plant", "elec_node"), 7.0)
         price_forecasts = {"type": "map", "index_type": "str", "data": {"high": 50.0, "low": 30.0}}
         add_val("node", "commodity_price_forecasts", ("elec_node",), price_forecasts)
         cost_forecasts = {"type": "map", "index_type": "str", "data": {"high": 10.0, "low": 5.0}}
@@ -568,9 +573,9 @@ def verify_results():
 
         # === From process_stochastic_structure ===
         ("stochastic_structure__stochastic_scenario", "weight_relative_to_parents",
-         ("stoch_set", "high"), "stochastic weight high"),
+         ("stochastic", "high"), "stochastic weight high"),
         ("stochastic_structure__stochastic_scenario", "weight_relative_to_parents",
-         ("stoch_set", "low"), "stochastic weight low"),
+         ("stochastic", "low"), "stochastic weight low"),
 
         # === From process_forecasts ===
         ("node__to_unit", "vom_cost", ("elec_node", "wind_farm"), "commodity_price_forecasts scenario map"),
@@ -579,6 +584,7 @@ def verify_results():
 
         # === From rolling_jump / rolling_horizon ===
         ("model", "roll_forward", ("sp1",), "rolling_jump to roll_forward"),
+        ("model", "window_duration", ("sp1",), "rolling_horizon to window_duration"),
         ("temporal_block", "block_start", ("sp1_tb0",), "tb0 block_start"),
         ("temporal_block", "block_end", ("sp1_tb0",), "tb0 block_end"),
         ("temporal_block", "block_start", ("sp1_tb1",), "tb1 block_start"),

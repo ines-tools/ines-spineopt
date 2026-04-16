@@ -329,6 +329,9 @@ def process_forecasts(source_db, target_db):
     ]
 
     for src_class, src_param, tgt_class, tgt_param, tgt_order, multiplier in forecast_mappings:
+        # Derive the base parameter name (without _forecasts suffix)
+        base_param = src_param.replace("_forecasts", "")
+
         for pv in source_db.get_parameter_value_items(
             entity_class_name=src_class, parameter_definition_name=src_param
         ):
@@ -344,14 +347,28 @@ def process_forecasts(source_db, target_db):
                 for k in tgt_order
             )
 
+            # Look up the realization (base) value for the same entity
+            indexes = list(parsed.indexes)
+            values = [
+                multiplier * v if isinstance(v, (int, float)) else v
+                for v in parsed.values
+            ]
+            base_items = source_db.get_parameter_value_items(
+                entity_class_name=src_class,
+                parameter_definition_name=base_param,
+                entity_byname=pv["entity_byname"],
+            )
+            if base_items:
+                base_val = base_items[0]["parsed_value"]
+                if isinstance(base_val, (int, float)):
+                    base_val = multiplier * base_val
+                indexes = ["realization"] + indexes
+                values = [base_val] + values
+
             # Build scenario-indexed Map from the forecast data
-            # 1st index of the INES Map = forecast/scenario name
             scenario_map = Map(
-                indexes=list(parsed.indexes),
-                values=[
-                    multiplier * v if isinstance(v, (int, float)) else v
-                    for v in parsed.values
-                ],
+                indexes=indexes,
+                values=values,
                 index_name="stochastic_scenario",
             )
 
@@ -380,20 +397,14 @@ def process_forecasts(source_db, target_db):
 
 
 def process_stochastic_structure(source_db, target_db):
-    """Map INES set stochastic parameters to SpineOpt stochastic_structure entities."""
+    """Map INES set stochastic parameters to SpineOpt stochastic_structure entities.
 
-    # Check stochastic_scope on solve_pattern
-    stochastic_scope = "none"
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="solve_pattern", parameter_definition_name="stochastic_scope"
-    ):
-        stochastic_scope = pv["parsed_value"]
+    Uses the single 'stochastic' stochastic_structure and 'realization' scenario
+    already created in timeline_setup. Forecast scenarios are added to that structure.
+    """
 
-    # Find all model entities (from solve_pattern → model mapping)
-    model_names = [
-        e["entity_byname"][0]
-        for e in target_db.get_entity_items(entity_class_name="model")
-    ]
+    sto_structure = "stochastic"
+    realization_name = "realization"
 
     for pv_method in source_db.get_parameter_value_items(
         entity_class_name="set", parameter_definition_name="stochastic_method"
@@ -404,12 +415,6 @@ def process_stochastic_structure(source_db, target_db):
 
         set_name = pv_method["entity_byname"][0]
         alt = pv_method["alternative_name"]
-
-        # Create stochastic_structure entity
-        try:
-            add_entity(target_db, "stochastic_structure", (set_name,))
-        except RuntimeError:
-            pass
 
         # Get forecast weights: map of {forecast_name: weight}
         forecast_weights = {}
@@ -422,20 +427,6 @@ def process_stochastic_structure(source_db, target_db):
                     for idx, val in zip(parsed.indexes, parsed.values):
                         forecast_weights[str(idx)] = float(val)
 
-        # Create "realization" scenario entity + structure relationship
-        realization_name = set_name + "_realization"
-        try:
-            add_entity(target_db, "stochastic_scenario", (realization_name,))
-        except RuntimeError:
-            pass
-        try:
-            add_entity(
-                target_db, "stochastic_structure__stochastic_scenario",
-                (set_name, realization_name),
-            )
-        except RuntimeError:
-            pass
-
         # Create forecast scenario entities + relationships + weights + parent-child
         for forecast_name, weight in forecast_weights.items():
             try:
@@ -445,7 +436,7 @@ def process_stochastic_structure(source_db, target_db):
             try:
                 add_entity(
                     target_db, "stochastic_structure__stochastic_scenario",
-                    (set_name, forecast_name),
+                    (sto_structure, forecast_name),
                 )
             except RuntimeError:
                 pass
@@ -454,7 +445,7 @@ def process_stochastic_structure(source_db, target_db):
                 add_parameter_value(
                     target_db, "stochastic_structure__stochastic_scenario",
                     "weight_relative_to_parents",
-                    alt, (set_name, forecast_name), weight,
+                    alt, (sto_structure, forecast_name), weight,
                 )
             except RuntimeError:
                 pass
@@ -474,7 +465,7 @@ def process_stochastic_structure(source_db, target_db):
                 try:
                     add_entity(
                         target_db, "node__stochastic_structure",
-                        (node_name, set_name),
+                        (node_name, sto_structure),
                     )
                 except RuntimeError:
                     pass
@@ -486,18 +477,7 @@ def process_stochastic_structure(source_db, target_db):
                 try:
                     add_entity(
                         target_db, "units_on__stochastic_structure",
-                        (unit_name, set_name),
-                    )
-                except RuntimeError:
-                    pass
-
-        # If stochastic_scope is whole_model, set model__default_stochastic_structure
-        if stochastic_scope == "whole_model":
-            for model_name in model_names:
-                try:
-                    add_entity(
-                        target_db, "model__default_stochastic_structure",
-                        (model_name, set_name),
+                        (unit_name, sto_structure),
                     )
                 except RuntimeError:
                     pass
@@ -1706,7 +1686,7 @@ def timeline_setup(source_db, target_db):
     default_alt = source_db.get_alternative_items()[0]["name"]
 
     # Process scenario realizations (shared across all models)
-    sto_structure = "deterministic"
+    sto_structure = "stochastic"
     sto_scenario = "realization"
     add_entity(target_db, "stochastic_structure", (sto_structure,))
     add_entity(target_db, "stochastic_scenario", (sto_scenario,))
@@ -1831,6 +1811,13 @@ def timeline_setup(source_db, target_db):
                 target_db, "model", "roll_forward",
                 default_alt, (model_name,),
                 {"type": "duration", "data": rolling_jump},
+            )
+
+        if rolling_horizon is not None:
+            add_parameter_value(
+                target_db, "model", "window_duration",
+                default_alt, (model_name,),
+                {"type": "duration", "data": rolling_horizon},
             )
 
         # Investment temporal block (if investment parameters exist)
@@ -2935,6 +2922,89 @@ def flow_profile_method(source_db, target_db):
                     demand_value,
                 )
 
+    # flow_profile_forecasts → stochastic_scenario-indexed Map for demand
+    for param_map in source_db.get_parameter_value_items(
+        entity_class_name="node",
+        parameter_definition_name="flow_profile_forecasts",
+    ):
+        if param_map["type"] != "map":
+            continue
+        node_name = param_map["entity_byname"][0]
+        alt = param_map["alternative_name"]
+        parsed = param_map["parsed_value"]
+
+        # Get flow_scaling_method and flow_annual for this node
+        flow_method_items = source_db.get_parameter_value_items(
+            entity_class_name="node",
+            entity_byname=(node_name,),
+            parameter_definition_name="flow_scaling_method",
+        )
+        flow_method = flow_method_items[0] if flow_method_items else None
+        flow_annual_items = None
+        annual_value = None
+        if flow_method and flow_method["parsed_value"] == "scale_to_annual":
+            flow_annual_items = source_db.get_parameter_value_items(
+                entity_class_name="node",
+                entity_byname=(node_name,),
+                parameter_definition_name="flow_annual",
+            )
+            if flow_annual_items:
+                fav = flow_annual_items[0]["parsed_value"]
+                annual_value = float(fav) if isinstance(fav, (int, float)) else float(fav.values[0])
+
+        def _process_profile_value(profile_val):
+            """Process a single profile value (float or nested ts) into demand value."""
+            if isinstance(profile_val, (int, float)):
+                if annual_value is not None:
+                    num_steps_year = pd.to_timedelta("8760h") / pd.to_timedelta(resolution)
+                    profile_sum_annual = abs(profile_val) * num_steps_year
+                    scale_factor = annual_value / profile_sum_annual if profile_sum_annual > 0 else 1.0
+                    return -1.0 * scale_factor * profile_val
+                return -1.0 * profile_val
+            # For nested Map/TimeSeries values, negate the values
+            if hasattr(profile_val, 'indexes') and hasattr(profile_val, 'values'):
+                negated_values = [-1.0 * v for v in profile_val.values]
+                return type(profile_val)(profile_val.indexes, negated_values, profile_val.ignore_year, profile_val.repeat)
+            return profile_val
+
+        # Build scenario-indexed Map
+        indexes = list(parsed.indexes)
+        values = [_process_profile_value(v) for v in parsed.values]
+
+        # Prepend realization from base flow_profile
+        base_items = source_db.get_parameter_value_items(
+            entity_class_name="node",
+            parameter_definition_name="flow_profile",
+            entity_byname=(node_name,),
+        )
+        if base_items:
+            base_val = base_items[0]["parsed_value"]
+            realization_demand = _process_profile_value(base_val)
+            indexes = ["realization"] + indexes
+            values = [realization_demand] + values
+
+        scenario_map = Map(
+            indexes=indexes,
+            values=values,
+            index_name="stochastic_scenario",
+        )
+
+        try:
+            add_parameter_value(
+                target_db, "node", "demand",
+                alt, (node_name,), scenario_map,
+            )
+        except RuntimeError:
+            db_val, val_type = api.to_database(scenario_map)
+            target_db.update_parameter_value_item(
+                entity_class_name="node",
+                entity_byname=(node_name,),
+                parameter_definition_name="demand",
+                alternative_name=alt,
+                value=db_val,
+                type=val_type,
+            )
+
     try:
         target_db.commit_session("Added flow profile")
     except NothingToCommit:
@@ -3585,12 +3655,23 @@ def process_commodity_price(source_db, target_db):
         node_name = pv["entity_byname"][0]
         alt = pv["alternative_name"]
         parsed = pv["parsed_value"]
+
+        # Look up realization value from commodity_price
+        indexes = list(parsed.indexes)
+        values = list(parsed.values)
+        base_items = source_db.get_parameter_value_items(
+            entity_class_name="node",
+            parameter_definition_name="commodity_price",
+            entity_byname=(node_name,),
+        )
+        if base_items:
+            base_val = base_items[0]["parsed_value"]
+            indexes = ["realization"] + indexes
+            values = [base_val] + values
+
         scenario_map = Map(
-            indexes=list(parsed.indexes),
-            values=[
-                v if isinstance(v, (int, float)) else v
-                for v in parsed.values
-            ],
+            indexes=indexes,
+            values=values,
             index_name="stochastic_scenario",
         )
         for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
