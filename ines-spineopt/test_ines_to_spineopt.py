@@ -473,15 +473,15 @@ def verify_results():
         ("node", "storage_lifetime_technical", ("storage_node",), "storage lifetime technical"),
 
         # === From unit_flow_variants ===
-        ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
+        ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("gas_node", "gas_plant", "gas_plant", "elec_node"), "equality_ratio"),
 
         # === From process_conversion_coefficients ===
-        ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
+        ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("gas_plant", "elec_node", "gas_node", "gas_plant"), "conversion_coeff"),
 
         # === From process_efficiency: constant_efficiency ===
-        ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
+        ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("eff_unit", "elec_node", "fuel_node", "eff_unit"), "constant efficiency ratio"),
 
         # === From process_efficiency: partial_load_efficiency ===
@@ -489,28 +489,28 @@ def verify_results():
          ("pw_unit", "elec_node"), "piecewise operating_points"),
         ("unit__to_node", "minimum_operating_point",
          ("pw_unit", "elec_node"), "piecewise min_operating_point"),
-        ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
+        ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("fuel_node", "pw_unit", "pw_unit", "elec_node"), "piecewise efficiency ratio"),
 
         # === From process_emissions: CO2 ===
         ("node", "storage_active", ("atmosphere",), "atmosphere storage_active"),
         ("node", "storage_state_max", ("atmosphere",), "atmosphere storage_state_max"),
         ("node", "tax_in_unit_flow", ("atmosphere",), "co2_price"),
-        ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
+        ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("gas_plant", "atmosphere", "gas_node", "gas_plant"), "co2 emission flow ratio"),
 
         # === From process_emissions: SO2 ===
         ("node", "storage_active", ("so2_emissions",), "so2 storage_active"),
         ("node", "storage_state_max", ("so2_emissions",), "so2 storage_state_max"),
         ("node", "tax_in_unit_flow", ("so2_emissions",), "so2_price"),
-        ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
+        ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("gas_plant", "so2_emissions", "gas_node", "gas_plant"), "so2 emission flow ratio"),
 
         # === From process_emissions: NOx ===
         ("node", "storage_active", ("nox_emissions",), "nox storage_active"),
         ("node", "storage_state_max", ("nox_emissions",), "nox storage_state_max"),
         ("node", "tax_in_unit_flow", ("nox_emissions",), "nox_price"),
-        ("unit_flow__unit_flow", "constraint_equality_flow_ratio",
+        ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("gas_plant", "nox_emissions", "gas_plant", "elec_node"), "nox emission flow ratio"),
 
         # === From storage_state_fix_method ===

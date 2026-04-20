@@ -1125,7 +1125,7 @@ def _get_emission_rates_for_type(source_db, target_db, config):
 def _create_emission_flows(target_db, emission_node, emission_rates):
     """Create emission flow relationships (unit__to_node + unit_flow__unit_flow or user_constraint).
 
-    For single-flow units: uses unit_flow__unit_flow with constraint_equality_flow_ratio.
+    For single-flow units: uses unit_flow__unit_flow with flow_ratio_equality_coefficient.
     For multi-flow units: uses user_constraint with coefficients.
     """
     for unit_name, flows in emission_rates.items():
@@ -1145,7 +1145,7 @@ def _create_emission_flows(target_db, emission_node, emission_rates):
             except RuntimeError:
                 pass
             add_parameter_value(
-                target_db, "unit_flow__unit_flow", "constraint_equality_flow_ratio",
+                target_db, "unit_flow__unit_flow", "flow_ratio_equality_coefficient",
                 alt, uf_byname, rate,
             )
         else:
@@ -1279,7 +1279,7 @@ def _process_period_emission_limits(target_db, config, param_map, emission_rates
                 except RuntimeError:
                     pass
                 add_parameter_value(
-                    target_db, "unit_flow__unit_flow", "constraint_equality_flow_ratio",
+                    target_db, "unit_flow__unit_flow", "flow_ratio_equality_coefficient",
                     alt, uf_byname, ts_ratio,
                 )
             else:
@@ -1358,7 +1358,7 @@ def _handle_explicit_co2_outputs(target_db):
         add_parameter_value(
             target_db,
             "unit_flow__unit_flow",
-            "constraint_equality_flow_ratio",
+            "flow_ratio_equality_coefficient",
             default_alt,
             (unit_name, node_out, "atmosphere", unit_name),
             1.0,
@@ -2579,9 +2579,9 @@ def lifetime_to_duration(source_db, target_db, settings):
 def unit_flow_variants(source_db, target_db, settings):
 
     parameters_mapping = {
-        "equality_ratio": "constraint_equality_flow_ratio",
-        "less_than_ratio": "constraint_less_than_flow_ratio",
-        "greater_than_ration": "constraint_greater_than_flow_ratio",
+        "equality_ratio": "flow_ratio_equality_coefficient",
+        "less_than_ratio": "flow_ratio_less_than_coefficient",
+        "greater_than_ration": "flow_ratio_greater_than_coefficient",
     }
     for param_map in source_db.get_parameter_value_items(
         entity_class_name="unit_flow__unit_flow"
@@ -3077,7 +3077,7 @@ def process_efficiency(source_db, target_db):
 
 
 def _process_constant_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
-    """Handle constant_efficiency: set constraint_equality_flow_ratio = efficiency for each (out, in) pair."""
+    """Handle constant_efficiency: set flow_ratio_equality_coefficient = efficiency for each (out, in) pair."""
     for out_node in unit_outputs:
         for in_node in unit_inputs:
             if out_node == in_node:
@@ -3094,13 +3094,13 @@ def _process_constant_efficiency(target_db, unit_name, efficiency, unit_outputs,
             existing_param = target_db.get_parameter_value_item(
                 entity_class_name="unit_flow__unit_flow",
                 entity_byname=uf_byname,
-                parameter_definition_name="constraint_equality_flow_ratio",
+                parameter_definition_name="flow_ratio_equality_coefficient",
                 alternative_name=alt,
             )
             if not existing_param:
                 add_parameter_value(
                     target_db, "unit_flow__unit_flow",
-                    "constraint_equality_flow_ratio", alt, uf_byname, efficiency,
+                    "flow_ratio_equality_coefficient", alt, uf_byname, efficiency,
                 )
 
 
@@ -3154,18 +3154,18 @@ def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs
             existing_param = target_db.get_parameter_value_item(
                 entity_class_name="unit_flow__unit_flow",
                 entity_byname=uf_byname,
-                parameter_definition_name="constraint_equality_flow_ratio",
+                parameter_definition_name="flow_ratio_equality_coefficient",
                 alternative_name=alt,
             )
             if not existing_param:
                 add_parameter_value(
                     target_db, "unit_flow__unit_flow",
-                    "constraint_equality_flow_ratio", alt, uf_byname, ratio_array,
+                    "flow_ratio_equality_coefficient", alt, uf_byname, ratio_array,
                 )
 
 
 def process_conversion_coefficients(source_db, target_db):
-    """Convert INES conversion_coefficients to SpineOpt constraint_equality_flow_ratio on unit_flow__unit_flow."""
+    """Convert INES conversion_coefficients to SpineOpt flow_ratio_equality_coefficient on unit_flow__unit_flow."""
 
     # Collect units that have efficiency defined (those are handled by process_efficiency)
     units_with_efficiency = set()
@@ -3262,14 +3262,14 @@ def process_conversion_coefficients(source_db, target_db):
                     existing_param = target_db.get_parameter_value_item(
                         entity_class_name="unit_flow__unit_flow",
                         entity_byname=uf_byname,
-                        parameter_definition_name="constraint_equality_flow_ratio",
+                        parameter_definition_name="flow_ratio_equality_coefficient",
                         alternative_name=alt,
                     )
                     if not existing_param:
                         add_parameter_value(
                             target_db,
                             "unit_flow__unit_flow",
-                            "constraint_equality_flow_ratio",
+                            "flow_ratio_equality_coefficient",
                             alt,
                             uf_byname,
                             ratio,
