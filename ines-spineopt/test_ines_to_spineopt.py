@@ -129,6 +129,7 @@ def populate_source_db():
         add_ent("set", ("stoch_set",))
         add_ent("set__node", ("stoch_set", "elec_node"))
         add_ent("set__unit", ("stoch_set", "gas_plant"))
+        add_ent("set__link", ("stoch_set", "power_line"))
         db.commit_session("Added entities")
 
         # === SOLVE PATTERN / PERIOD PARAMETERS ===
@@ -140,6 +141,8 @@ def populate_source_db():
         add_val("solve_pattern", "time_resolution", ("sp1",), {"type": "duration", "data": "1h"})
         add_val("solve_pattern", "rolling_jump", ("sp1",), {"type": "duration", "data": "168h"})
         add_val("solve_pattern", "rolling_horizon", ("sp1",), {"type": "duration", "data": "336h"})
+        add_val("solve_pattern", "time_resolution_scope", ("sp1",), "set_based_override")
+        add_val("set", "time_resolution", ("stoch_set",), {"type": "duration", "data": "4h"})
         add_val("period", "start_time", ("p2025",), {"type": "date_time", "data": "2025-01-01T00:00:00"})
         add_val("period", "years_represented", ("p2025",), 5.0)
         add_val("period", "start_time", ("p2030",), {"type": "date_time", "data": "2030-01-01T00:00:00"})
@@ -591,6 +594,22 @@ def verify_results():
         ("temporal_block", "block_end", ("sp1_tb1",), "tb1 block_end"),
         ("temporal_block", "resolution", ("sp1_investments",), "investment temporal block resolution"),
 
+        # === Set-based temporal block override ===
+        ("temporal_block", "resolution", ("stoch_set_sp1_tb0",), "set override tb0 resolution"),
+        ("temporal_block", "block_start", ("stoch_set_sp1_tb0",), "set override tb0 block_start"),
+        ("temporal_block", "block_end", ("stoch_set_sp1_tb0",), "set override tb0 block_end"),
+        ("temporal_block", "resolution", ("stoch_set_sp1_tb1",), "set override tb1 resolution"),
+        ("temporal_block", "block_start", ("stoch_set_sp1_tb1",), "set override tb1 block_start"),
+        ("temporal_block", "block_end", ("stoch_set_sp1_tb1",), "set override tb1 block_end"),
+        ("temporal_block", "resolution", ("stoch_set_sp1_investments",), "set override inv tb resolution"),
+        ("node__temporal_block", None, ("elec_node", "stoch_set_sp1_tb0"), "set node temporal_block tb0"),
+        ("node__temporal_block", None, ("elec_node", "stoch_set_sp1_tb1"), "set node temporal_block tb1"),
+        ("units_on__temporal_block", None, ("gas_plant", "stoch_set_sp1_tb0"), "set unit temporal_block tb0"),
+        ("units_on__temporal_block", None, ("gas_plant", "stoch_set_sp1_tb1"), "set unit temporal_block tb1"),
+        ("node__investment_temporal_block", None, ("elec_node", "stoch_set_sp1_investments"), "set node inv temporal_block"),
+        ("unit__investment_temporal_block", None, ("gas_plant", "stoch_set_sp1_investments"), "set unit inv temporal_block"),
+        ("connection__investment_temporal_block", None, ("power_line", "stoch_set_sp1_investments"), "set conn inv temporal_block"),
+
         # === Node penalty defaults ===
         ("node", "balance_penalty", ("storage_node",), "default node penalty on storage_node"),
         ("node", "balance_penalty", ("fuel_node",), "default node penalty on fuel_node"),
@@ -628,7 +647,20 @@ def verify_results():
                     )
                     continue
 
-                if entity_byname is not None:
+                if param_name is None:
+                    # Entity existence check only
+                    ent = db.get_entity_item(
+                        entity_class_name=entity_class,
+                        entity_byname=entity_byname,
+                    )
+                    if ent:
+                        found.append((entity_class, param_name, entity_byname, desc))
+                    else:
+                        not_found.append(
+                            (entity_class, param_name, entity_byname, desc,
+                             "Entity not found")
+                        )
+                elif entity_byname is not None:
                     pv = db.get_parameter_value_item(
                         entity_class_name=entity_class,
                         parameter_definition_name=param_name,

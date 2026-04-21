@@ -1835,12 +1835,132 @@ def timeline_setup(source_db, target_db):
                 {"type": "duration", "data": durations[0]},
             )
 
+    # Set-based time resolution override
+    time_res_scope_items = source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern",
+        parameter_definition_name="time_resolution_scope",
+    )
+    if time_res_scope_items and time_res_scope_items[0]["parsed_value"] == "set_based_override":
+        _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_investments)
+
     try:
         target_db.commit_session("Added timeline")
     except NothingToCommit:
         pass
     except DBAPIError as e:
         print("commit timeline error:", e)
+
+
+def _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_investments):
+    """Create per-set temporal blocks when time_resolution_scope is set_based_override.
+
+    For each set with a time_resolution parameter, creates copies of the existing
+    realization temporal blocks (and investment temporal block if applicable) with
+    the set's resolution. Links set member nodes, units, and connections to these blocks.
+    """
+    # Collect existing temporal blocks from model__default_temporal_block
+    realization_blocks = []
+    for ent in target_db.get_entity_items(entity_class_name="model__default_temporal_block"):
+        tb_name = ent["entity_byname"][1]
+        realization_blocks.append(tb_name)
+
+    investment_blocks = []
+    if has_investments:
+        for ent in target_db.get_entity_items(entity_class_name="model__default_investment_temporal_block"):
+            tb_name = ent["entity_byname"][1]
+            investment_blocks.append(tb_name)
+
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="set", parameter_definition_name="time_resolution"
+    ):
+        set_name = pv["entity_byname"][0]
+        set_resolution = json.loads(pv["value"])["data"]
+
+        # Create copies of realization temporal blocks for this set
+        set_tb_names = []
+        for orig_tb in realization_blocks:
+            set_tb_name = f"{set_name}_{orig_tb}"
+            set_tb_names.append(set_tb_name)
+            add_entity(target_db, "temporal_block", (set_tb_name,))
+            # Copy block_start and block_end from original, override resolution
+            for param_name in ["block_start", "block_end"]:
+                orig_param = target_db.get_parameter_value_item(
+                    entity_class_name="temporal_block",
+                    entity_byname=(orig_tb,),
+                    parameter_definition_name=param_name,
+                    alternative_name=default_alt,
+                )
+                if orig_param:
+                    add_parameter_value(
+                        target_db, "temporal_block", param_name,
+                        default_alt, (set_tb_name,),
+                        orig_param["parsed_value"],
+                    )
+            add_parameter_value(
+                target_db, "temporal_block", "resolution",
+                default_alt, (set_tb_name,),
+                {"type": "duration", "data": set_resolution},
+            )
+
+        # Create copies of investment temporal blocks for this set
+        set_inv_tb_names = []
+        for orig_tb in investment_blocks:
+            set_inv_tb_name = f"{set_name}_{orig_tb}"
+            set_inv_tb_names.append(set_inv_tb_name)
+            add_entity(target_db, "temporal_block", (set_inv_tb_name,))
+            # Copy resolution from original investment block (duration-based)
+            orig_res = target_db.get_parameter_value_item(
+                entity_class_name="temporal_block",
+                entity_byname=(orig_tb,),
+                parameter_definition_name="resolution",
+                alternative_name=default_alt,
+            )
+            if orig_res:
+                add_parameter_value(
+                    target_db, "temporal_block", "resolution",
+                    default_alt, (set_inv_tb_name,),
+                    orig_res["parsed_value"],
+                )
+
+        # Link set member nodes
+        for member in source_db.get_entity_items(entity_class_name="set__node"):
+            if member["entity_byname"][0] == set_name:
+                node_name = member["entity_byname"][1]
+                for tb in set_tb_names:
+                    try:
+                        add_entity(target_db, "node__temporal_block", (node_name, tb))
+                    except RuntimeError:
+                        pass
+                for tb in set_inv_tb_names:
+                    try:
+                        add_entity(target_db, "node__investment_temporal_block", (node_name, tb))
+                    except RuntimeError:
+                        pass
+
+        # Link set member units
+        for member in source_db.get_entity_items(entity_class_name="set__unit"):
+            if member["entity_byname"][0] == set_name:
+                unit_name = member["entity_byname"][1]
+                for tb in set_tb_names:
+                    try:
+                        add_entity(target_db, "units_on__temporal_block", (unit_name, tb))
+                    except RuntimeError:
+                        pass
+                for tb in set_inv_tb_names:
+                    try:
+                        add_entity(target_db, "unit__investment_temporal_block", (unit_name, tb))
+                    except RuntimeError:
+                        pass
+
+        # Link set member links (INES link → SpineOpt connection)
+        for member in source_db.get_entity_items(entity_class_name="set__link"):
+            if member["entity_byname"][0] == set_name:
+                link_name = member["entity_byname"][1]
+                for tb in set_inv_tb_names:
+                    try:
+                        add_entity(target_db, "connection__investment_temporal_block", (link_name, tb))
+                    except RuntimeError:
+                        pass
 
 
 def storage_state_fix_method(source_db, target_db):
