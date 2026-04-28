@@ -3745,6 +3745,8 @@ def process_commodity_price(source_db, target_db):
                 continue
         elif pv["type"] == "float":
             value = pv["parsed_value"]
+        elif pv["type"] == "time_series":
+            value = pv["parsed_value"]
         else:
             continue
         for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
