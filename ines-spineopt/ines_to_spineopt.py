@@ -530,7 +530,7 @@ def process_reserves(source_db, target_db):
                 pass
             add_parameter_value(target_db, "node", "reserve_active", alt, (node_name,), True)
             add_parameter_value(target_db, "node", "balance_sense", alt, (node_name,), ">=")
-            add_parameter_value(target_db, "node", "balance_type", alt, (node_name,), "none")
+            add_parameter_value(target_db, "node", "balance_type", alt, (node_name,), "node_balance")
             if direction == "upward":
                 add_parameter_value(target_db, "node", "reserve_upward", alt, (node_name,), True)
             elif direction == "downward":
