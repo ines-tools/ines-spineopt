@@ -372,7 +372,6 @@ def verify_results():
 
     expected = [
         # === From transform_parameters (YAML) ===
-        ("node__to_unit", "capacity_per_unit", ("gas_node", "gas_plant"), "capacity via YAML"),
         ("node__to_unit", "ramp_limits_up", ("gas_node", "gas_plant"), "ramp_limit_up via YAML"),
         ("node__to_unit", "ramp_limits_down", ("gas_node", "gas_plant"), "ramp_limit_down via YAML"),
         ("unit__to_node", "capacity_per_unit", ("gas_plant", "elec_node"), "capacity via YAML"),

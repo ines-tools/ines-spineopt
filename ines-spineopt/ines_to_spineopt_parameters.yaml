@@ -1,6 +1,5 @@
 node__to_unit:
   node__to_unit:
-    capacity: [capacity_per_unit,1.0,[[1],[2]]]
     ramp_limit_up: [ramp_limits_up, 1.0, [[1],[2]]]
     ramp_limit_down: [ramp_limits_down, 1.0, [[1],[2]]]
 unit__to_node:

@@ -200,6 +200,9 @@ def main():
                 source_db, target_db, parameter_methods
             )
 
+            # node__to_unit capacity → unit__to_node capacity_per_unit (× max efficiency)
+            process_input_capacity(source_db, target_db)
+
             # Convert min_up_time and min_down_time from float hours to duration
             for duration_param in ["min_up_time", "min_down_time"]:
                 for pv in target_db.get_parameter_value_items(
@@ -490,6 +493,55 @@ def process_stochastic_structure(source_db, target_db):
         print("commit stochastic structure error:", e)
 
 
+def process_input_capacity(source_db, target_db):
+    """Convert node__to_unit.capacity to unit__to_node.capacity_per_unit × max efficiency."""
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node__to_unit", parameter_definition_name="capacity"
+    ):
+        node_name = pv["entity_byname"][0]
+        unit_name = pv["entity_byname"][1]
+        alt = pv["alternative_name"]
+        capacity_val = pv["parsed_value"]
+
+        # Get max efficiency of the unit
+        eff_items = source_db.get_parameter_value_items(
+            entity_class_name="unit",
+            entity_byname=(unit_name,),
+            parameter_definition_name="efficiency",
+        )
+        max_eff = 1.0
+        if eff_items:
+            eff_val = eff_items[0]["parsed_value"]
+            if isinstance(eff_val, (int, float)):
+                max_eff = eff_val
+            elif isinstance(eff_val, list):
+                max_eff = max(eff_val)
+
+        output_capacity = capacity_val * max_eff
+
+        # Find the output nodes for this unit
+        unit_outputs = [
+            f["entity_byname"][1]
+            for f in source_db.get_entity_items(entity_class_name="unit__to_node")
+            if f["entity_byname"][0] == unit_name
+        ]
+        for out_node in unit_outputs:
+            try:
+                add_parameter_value(
+                    target_db, "unit__to_node", "capacity_per_unit",
+                    alt, (unit_name, out_node), output_capacity,
+                )
+            except RuntimeError:
+                pass
+
+    try:
+        target_db.commit_session("Added input capacity to output side")
+    except NothingToCommit:
+        pass
+    except DBAPIError as e:
+        print("commit input capacity error:", e)
+
+
 def process_reserves(source_db, target_db):
     """Map INES reserve entities and parameters to SpineOpt node-based reserves."""
 
@@ -585,6 +637,7 @@ def process_reserves(source_db, target_db):
         share = pv["parsed_value"]
         # Look up the unit's capacity on the specific node
         capacity_val = None
+        from_input = False
         for cap_class in ["unit__to_node", "node__to_unit"]:
             for cap in source_db.get_parameter_value_items(
                 entity_class_name=cap_class, parameter_definition_name="capacity"
@@ -595,6 +648,7 @@ def process_reserves(source_db, target_db):
                     break
                 elif cap_class == "node__to_unit" and cap_byname == (node_name, unit_name):
                     capacity_val = cap["parsed_value"]
+                    from_input = True
                     break
             if capacity_val is not None:
                 break
@@ -608,6 +662,20 @@ def process_reserves(source_db, target_db):
                     total_cap += cap["parsed_value"]
             if total_cap > 0:
                 capacity_val = total_cap
+        # If capacity came from node__to_unit (input side), multiply by max efficiency
+        if from_input and capacity_val is not None:
+            eff_items = source_db.get_parameter_value_items(
+                entity_class_name="unit",
+                entity_byname=(unit_name,),
+                parameter_definition_name="efficiency",
+            )
+            if eff_items:
+                eff_val = eff_items[0]["parsed_value"]
+                if isinstance(eff_val, (int, float)):
+                    capacity_val = capacity_val * eff_val
+                elif isinstance(eff_val, list):
+                    max_eff = max(eff_val)
+                    capacity_val = capacity_val * max_eff
         if capacity_val is not None:
             reserve_capacity = share * capacity_val
             if reserve_name in reserve_nodes:
