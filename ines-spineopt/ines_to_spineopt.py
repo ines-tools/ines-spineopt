@@ -583,7 +583,7 @@ def process_reserves(source_db, target_db):
         reserve_name = pv["entity_byname"][2]
         alt = pv["alternative_name"]
         share = pv["parsed_value"]
-        # Look up the unit's capacity on the original node
+        # Look up the unit's capacity on the specific node
         capacity_val = None
         for cap_class in ["unit__to_node", "node__to_unit"]:
             for cap in source_db.get_parameter_value_items(
@@ -598,6 +598,16 @@ def process_reserves(source_db, target_db):
                     break
             if capacity_val is not None:
                 break
+        # If not found on specific node, sum all output capacities of the unit
+        if capacity_val is None:
+            total_cap = 0
+            for cap in source_db.get_parameter_value_items(
+                entity_class_name="unit__to_node", parameter_definition_name="capacity"
+            ):
+                if cap["entity_byname"][0] == unit_name:
+                    total_cap += cap["parsed_value"]
+            if total_cap > 0:
+                capacity_val = total_cap
         if capacity_val is not None:
             reserve_capacity = share * capacity_val
             if reserve_name in reserve_nodes:
