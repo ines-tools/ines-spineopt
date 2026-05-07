@@ -587,6 +587,11 @@
         ],
         [
             "node",
+            "cheap_reserve_group",
+            null
+        ],
+        [
+            "node",
             "demand",
             null
         ],
@@ -598,6 +603,11 @@
         [
             "node",
             "expensive supply",
+            null
+        ],
+        [
+            "node",
+            "expensive_reserve_group",
             null
         ],
         [
@@ -786,6 +796,14 @@
             "unit__to_node",
             [
                 "cheap unit",
+                "cheap_reserve_group"
+            ],
+            null
+        ],
+        [
+            "unit__to_node",
+            [
+                "cheap unit",
                 "reserves"
             ],
             null
@@ -795,6 +813,14 @@
             [
                 "expensive unit",
                 "expensive supply"
+            ],
+            null
+        ],
+        [
+            "unit__to_node",
+            [
+                "expensive unit",
+                "expensive_reserve_group"
             ],
             null
         ],
@@ -969,6 +995,28 @@
             ],
             "Base",
             true
+        ]
+    ],
+    "entity_groups": [
+        [
+            "node",
+            "cheap_reserve_group",
+            "cheap supply"
+        ],
+        [
+            "node",
+            "cheap_reserve_group",
+            "reserves"
+        ],
+        [
+            "node",
+            "expensive_reserve_group",
+            "expensive supply"
+        ],
+        [
+            "node",
+            "expensive_reserve_group",
+            "reserves"
         ]
     ],
     "parameter_value_lists": [
@@ -4625,6 +4673,13 @@
         ],
         [
             "node",
+            "cheap_reserve_group",
+            "balance_type",
+            "none",
+            "Base"
+        ],
+        [
+            "node",
             "demand",
             "balance_penalty",
             1000.0,
@@ -4663,6 +4718,13 @@
             "expensive supply",
             "balance_type",
             "node_balance",
+            "Base"
+        ],
+        [
+            "node",
+            "expensive_reserve_group",
+            "balance_type",
+            "none",
             "Base"
         ],
         [
@@ -4785,7 +4847,17 @@
                 "cheap supply"
             ],
             "capacity_per_unit",
-            100.0,
+            10.0,
+            "Base"
+        ],
+        [
+            "unit__to_node",
+            [
+                "cheap unit",
+                "cheap_reserve_group"
+            ],
+            "capacity_per_unit",
+            10.0,
             "Base"
         ],
         [
@@ -4813,6 +4885,16 @@
             [
                 "expensive unit",
                 "expensive supply"
+            ],
+            "capacity_per_unit",
+            100.0,
+            "Base"
+        ],
+        [
+            "unit__to_node",
+            [
+                "expensive unit",
+                "expensive_reserve_group"
             ],
             "capacity_per_unit",
             100.0,
