@@ -672,6 +672,8 @@ def process_reserves(source_db, target_db):
                 add_entity(target_db, "node", (group_name,))
             except RuntimeError:
                 pass
+            # Group node has no balance_type
+            add_parameter_value(target_db, "node", "balance_type", alt, (group_name,), "none")
 
             # Add group members: reserve node and all output nodes of this unit
             try:
@@ -3829,6 +3831,14 @@ def process_node_penalty(source_db, target_db, default_penalty):
     for node_entity in target_db.get_entity_items(entity_class_name="node"):
         node_name = node_entity["entity_byname"][0]
         if node_name in commodity_nodes:
+            continue
+        # Skip nodes with balance_type "none"
+        bt_items = target_db.get_parameter_value_items(
+            entity_class_name="node",
+            entity_byname=(node_name,),
+            parameter_definition_name="balance_type",
+        )
+        if bt_items and bt_items[0]["parsed_value"] == "none":
             continue
         existing = target_db.get_parameter_value_items(
             entity_class_name="node",
