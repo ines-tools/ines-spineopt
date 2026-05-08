@@ -600,42 +600,15 @@ def process_reserves(source_db, target_db):
                     target_db, "node", "demand", alt, (node_name,), pv["parsed_value"]
                 )
 
-    # 3. unit__node__reserve → unit__to_node(unit, reserve_node) relationships and parameters
+    # 3. unit__node__reserve → unit__to_node entities, node groups, and capacity
     for ent in source_db.get_entity_items(entity_class_name="unit__node__reserve"):
         unit_name = ent["entity_byname"][0]
+        energy_node = ent["entity_byname"][1]
         reserve_name = ent["entity_byname"][2]
-        if reserve_name in reserve_nodes:
-            for node_name, _ in reserve_nodes[reserve_name]:
-                try:
-                    add_entity(target_db, "unit__to_node", (unit_name, node_name))
-                except RuntimeError:
-                    pass
+        if reserve_name not in reserve_nodes:
+            continue
 
-    # unit__node__reserve.reservation_cost → unit__to_node.reserve_procurement_cost
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="unit__node__reserve", parameter_definition_name="reservation_cost"
-    ):
-        unit_name = pv["entity_byname"][0]
-        reserve_name = pv["entity_byname"][2]
-        alt = pv["alternative_name"]
-        if reserve_name in reserve_nodes:
-            for node_name, _ in reserve_nodes[reserve_name]:
-                add_parameter_value(
-                    target_db, "unit__to_node", "reserve_procurement_cost",
-                    alt, (unit_name, node_name), pv["parsed_value"],
-                )
-
-    # unit__node__reserve.max_reserve_provision × capacity → unit__to_node.capacity_per_unit
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="unit__node__reserve",
-        parameter_definition_name="max_reserve_provision",
-    ):
-        unit_name = pv["entity_byname"][0]
-        node_name = pv["entity_byname"][1]
-        reserve_name = pv["entity_byname"][2]
-        alt = pv["alternative_name"]
-        share = pv["parsed_value"]
-        # Look up the unit's capacity on the specific node
+        # Look up unit capacity on the energy node
         capacity_val = None
         from_input = False
         for cap_class in ["unit__to_node", "node__to_unit"]:
@@ -643,10 +616,10 @@ def process_reserves(source_db, target_db):
                 entity_class_name=cap_class, parameter_definition_name="capacity"
             ):
                 cap_byname = cap["entity_byname"]
-                if cap_class == "unit__to_node" and cap_byname == (unit_name, node_name):
+                if cap_class == "unit__to_node" and cap_byname == (unit_name, energy_node):
                     capacity_val = cap["parsed_value"]
                     break
-                elif cap_class == "node__to_unit" and cap_byname == (node_name, unit_name):
+                elif cap_class == "node__to_unit" and cap_byname == (energy_node, unit_name):
                     capacity_val = cap["parsed_value"]
                     from_input = True
                     break
@@ -674,16 +647,87 @@ def process_reserves(source_db, target_db):
                 if isinstance(eff_val, (int, float)):
                     capacity_val = capacity_val * eff_val
                 elif isinstance(eff_val, list):
-                    max_eff = max(eff_val)
-                    capacity_val = capacity_val * max_eff
-        if capacity_val is not None:
-            reserve_capacity = share * capacity_val
-            if reserve_name in reserve_nodes:
-                for res_node, _ in reserve_nodes[reserve_name]:
-                    add_parameter_value(
-                        target_db, "unit__to_node", "capacity_per_unit",
-                        alt, (unit_name, res_node), reserve_capacity,
-                    )
+                    capacity_val = capacity_val * max(eff_val)
+
+        # Look up max_reserve_provision (default 1.0)
+        mrp_items = source_db.get_parameter_value_items(
+            entity_class_name="unit__node__reserve",
+            parameter_definition_name="max_reserve_provision",
+            entity_byname=(unit_name, energy_node, reserve_name),
+        )
+        share = mrp_items[0]["parsed_value"] if mrp_items else 1.0
+
+        # Get alternative
+        alt_items = source_db.get_parameter_value_items(
+            entity_class_name="reserve", parameter_definition_name="reserve_type",
+            entity_byname=(reserve_name,),
+        )
+        alt = alt_items[0]["alternative_name"] if alt_items else "Base"
+
+        for res_node, _ in reserve_nodes[reserve_name]:
+            group_name = unit_name + "_" + res_node + "_group"
+
+            # Create group node entity
+            try:
+                add_entity(target_db, "node", (group_name,))
+            except RuntimeError:
+                pass
+
+            # Add group members: reserve node and all output nodes of this unit
+            try:
+                add_entity_group(target_db, "node", group_name, res_node)
+            except RuntimeError:
+                pass
+            unit_outputs = [
+                f["entity_byname"][1]
+                for f in source_db.get_entity_items(entity_class_name="unit__to_node")
+                if f["entity_byname"][0] == unit_name
+            ]
+            for out_node in unit_outputs:
+                try:
+                    add_entity_group(target_db, "node", group_name, out_node)
+                except RuntimeError:
+                    pass
+
+            # Create unit__to_node to reserve node
+            try:
+                add_entity(target_db, "unit__to_node", (unit_name, res_node))
+            except RuntimeError:
+                pass
+
+            # Create unit__to_node to group node
+            try:
+                add_entity(target_db, "unit__to_node", (unit_name, group_name))
+            except RuntimeError:
+                pass
+
+            # capacity_per_unit on reserve node = capacity × max_reserve_provision
+            if capacity_val is not None:
+                add_parameter_value(
+                    target_db, "unit__to_node", "capacity_per_unit",
+                    alt, (unit_name, res_node), capacity_val * share,
+                )
+
+            # capacity_per_unit on group node = capacity
+            if capacity_val is not None:
+                add_parameter_value(
+                    target_db, "unit__to_node", "capacity_per_unit",
+                    alt, (unit_name, group_name), capacity_val,
+                )
+
+    # unit__node__reserve.reservation_cost → unit__to_node.reserve_procurement_cost
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="unit__node__reserve", parameter_definition_name="reservation_cost"
+    ):
+        unit_name = pv["entity_byname"][0]
+        reserve_name = pv["entity_byname"][2]
+        alt = pv["alternative_name"]
+        if reserve_name in reserve_nodes:
+            for node_name, _ in reserve_nodes[reserve_name]:
+                add_parameter_value(
+                    target_db, "unit__to_node", "reserve_procurement_cost",
+                    alt, (unit_name, node_name), pv["parsed_value"],
+                )
 
     # 4. link__node__reserve → connection__to_node(link, reserve_node) relationships and parameters
     for ent in source_db.get_entity_items(entity_class_name="link__node__reserve"):

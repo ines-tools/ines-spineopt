@@ -561,6 +561,9 @@ def verify_results():
          ("gas_plant", "up_reserve"), "reserve procurement cost"),
         ("unit__to_node", "capacity_per_unit",
          ("gas_plant", "up_reserve"), "reserve capacity from max_provision * capacity"),
+        ("node", None, ("gas_plant_up_reserve_group",), "reserve group node exists"),
+        ("unit__to_node", "capacity_per_unit",
+         ("gas_plant", "gas_plant_up_reserve_group"), "reserve group capacity"),
         # symmetric reserve creates two nodes
         ("node", "reserve_active", ("sym_reserve_up",), "sym reserve_active up"),
         ("node", "reserve_upward", ("sym_reserve_up",), "sym reserve_upward"),
@@ -572,6 +575,16 @@ def verify_results():
          ("gas_plant", "sym_reserve_up"), "sym reserve cost up"),
         ("unit__to_node", "reserve_procurement_cost",
          ("gas_plant", "sym_reserve_down"), "sym reserve cost down"),
+        ("node", None, ("gas_plant_sym_reserve_up_group",), "sym reserve up group node exists"),
+        ("unit__to_node", "capacity_per_unit",
+         ("gas_plant", "gas_plant_sym_reserve_up_group"), "sym reserve up group capacity"),
+        ("unit__to_node", "capacity_per_unit",
+         ("gas_plant", "sym_reserve_up"), "sym reserve up capacity"),
+        ("node", None, ("gas_plant_sym_reserve_down_group",), "sym reserve down group node exists"),
+        ("unit__to_node", "capacity_per_unit",
+         ("gas_plant", "gas_plant_sym_reserve_down_group"), "sym reserve down group capacity"),
+        ("unit__to_node", "capacity_per_unit",
+         ("gas_plant", "sym_reserve_down"), "sym reserve down capacity"),
 
         # === From process_stochastic_structure ===
         ("stochastic_structure__stochastic_scenario", "weight_relative_to_parents",
