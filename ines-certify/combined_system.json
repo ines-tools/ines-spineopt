@@ -562,7 +562,7 @@
         ],
         [
             "connection",
-            "electricity transport",
+            "electricity transmission",
             null
         ],
         [
@@ -572,7 +572,7 @@
         ],
         [
             "model",
-            "solve_pattern",
+            "model",
             null
         ],
         [
@@ -587,6 +587,11 @@
         ],
         [
             "node",
+            "electricity remote hub",
+            null
+        ],
+        [
+            "node",
             "gas demand",
             null
         ],
@@ -597,32 +602,17 @@
         ],
         [
             "node",
-            "remote electricity hub",
+            "gas unit_reserves_group",
+            null
+        ],
+        [
+            "node",
+            "nuclear unit_reserves_group",
             null
         ],
         [
             "node",
             "reserves",
-            null
-        ],
-        [
-            "stochastic_scenario",
-            "cheap_high",
-            null
-        ],
-        [
-            "stochastic_scenario",
-            "cheap_low",
-            null
-        ],
-        [
-            "stochastic_scenario",
-            "expensive_high",
-            null
-        ],
-        [
-            "stochastic_scenario",
-            "expensive_low",
             null
         ],
         [
@@ -637,22 +627,22 @@
         ],
         [
             "temporal_block",
-            "gas time_solve_pattern_investments",
+            "gas time_model_investments",
             null
         ],
         [
             "temporal_block",
-            "gas time_solve_pattern_tb0",
+            "gas time_model_tb0",
             null
         ],
         [
             "temporal_block",
-            "solve_pattern_investments",
+            "model_investments",
             null
         ],
         [
             "temporal_block",
-            "solve_pattern_tb0",
+            "model_tb0",
             null
         ],
         [
@@ -677,12 +667,12 @@
         ],
         [
             "unit",
-            "solar",
+            "solar unit",
             null
         ],
         [
             "unit",
-            "wind",
+            "wind unit",
             null
         ],
         [
@@ -704,7 +694,7 @@
         [
             "connection__from_node",
             [
-                "electricity transport",
+                "electricity transmission",
                 "electricity hub"
             ],
             null
@@ -712,8 +702,8 @@
         [
             "connection__from_node",
             [
-                "electricity transport",
-                "remote electricity hub"
+                "electricity transmission",
+                "electricity remote hub"
             ],
             null
         ],
@@ -752,7 +742,7 @@
         [
             "connection__to_node",
             [
-                "electricity transport",
+                "electricity transmission",
                 "electricity hub"
             ],
             null
@@ -760,8 +750,8 @@
         [
             "connection__to_node",
             [
-                "electricity transport",
-                "remote electricity hub"
+                "electricity transmission",
+                "electricity remote hub"
             ],
             null
         ],
@@ -784,7 +774,7 @@
         [
             "model__default_investment_stochastic_structure",
             [
-                "solve_pattern",
+                "model",
                 "stochastic"
             ],
             null
@@ -792,15 +782,15 @@
         [
             "model__default_investment_temporal_block",
             [
-                "solve_pattern",
-                "solve_pattern_investments"
+                "model",
+                "model_investments"
             ],
             null
         ],
         [
             "model__default_stochastic_structure",
             [
-                "solve_pattern",
+                "model",
                 "stochastic"
             ],
             null
@@ -808,8 +798,8 @@
         [
             "model__default_temporal_block",
             [
-                "solve_pattern",
-                "solve_pattern_tb0"
+                "model",
+                "model_tb0"
             ],
             null
         ],
@@ -817,7 +807,7 @@
             "node__investment_temporal_block",
             [
                 "gas demand",
-                "gas time_solve_pattern_investments"
+                "gas time_model_investments"
             ],
             null
         ],
@@ -825,7 +815,7 @@
             "node__investment_temporal_block",
             [
                 "gas hub",
-                "gas time_solve_pattern_investments"
+                "gas time_model_investments"
             ],
             null
         ],
@@ -833,7 +823,7 @@
             "node__temporal_block",
             [
                 "gas demand",
-                "gas time_solve_pattern_tb0"
+                "gas time_model_tb0"
             ],
             null
         ],
@@ -841,7 +831,7 @@
             "node__temporal_block",
             [
                 "gas hub",
-                "gas time_solve_pattern_tb0"
+                "gas time_model_tb0"
             ],
             null
         ],
@@ -850,70 +840,6 @@
             [
                 "gas hub",
                 "gas unit"
-            ],
-            null
-        ],
-        [
-            "parent_stochastic_scenario__child_stochastic_scenario",
-            [
-                "realization",
-                "cheap_high"
-            ],
-            null
-        ],
-        [
-            "parent_stochastic_scenario__child_stochastic_scenario",
-            [
-                "realization",
-                "cheap_low"
-            ],
-            null
-        ],
-        [
-            "parent_stochastic_scenario__child_stochastic_scenario",
-            [
-                "realization",
-                "expensive_high"
-            ],
-            null
-        ],
-        [
-            "parent_stochastic_scenario__child_stochastic_scenario",
-            [
-                "realization",
-                "expensive_low"
-            ],
-            null
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "cheap_high"
-            ],
-            null
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "cheap_low"
-            ],
-            null
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "expensive_high"
-            ],
-            null
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "expensive_low"
             ],
             null
         ],
@@ -929,7 +855,7 @@
             "unit__to_node",
             [
                 "electricity import",
-                "remote electricity hub"
+                "electricity remote hub"
             ],
             null
         ],
@@ -953,6 +879,14 @@
             "unit__to_node",
             [
                 "gas unit",
+                "gas unit_reserves_group"
+            ],
+            null
+        ],
+        [
+            "unit__to_node",
+            [
+                "gas unit",
                 "reserves"
             ],
             null
@@ -969,6 +903,14 @@
             "unit__to_node",
             [
                 "nuclear unit",
+                "nuclear unit_reserves_group"
+            ],
+            null
+        ],
+        [
+            "unit__to_node",
+            [
+                "nuclear unit",
                 "reserves"
             ],
             null
@@ -976,7 +918,7 @@
         [
             "unit__to_node",
             [
-                "solar",
+                "solar unit",
                 "electricity demand"
             ],
             null
@@ -984,8 +926,8 @@
         [
             "unit__to_node",
             [
-                "wind",
-                "remote electricity hub"
+                "wind unit",
+                "electricity remote hub"
             ],
             null
         ],
@@ -1010,17 +952,17 @@
         [
             "connection__node__node",
             [
-                "electricity transport",
+                "electricity transmission",
                 "electricity hub",
-                "remote electricity hub"
+                "electricity remote hub"
             ],
             null
         ],
         [
             "connection__node__node",
             [
-                "electricity transport",
-                "remote electricity hub",
+                "electricity transmission",
+                "electricity remote hub",
                 "electricity hub"
             ],
             null
@@ -1066,7 +1008,7 @@
         [
             "connection",
             [
-                "electricity transport"
+                "electricity transmission"
             ],
             "Base",
             true
@@ -1082,7 +1024,7 @@
         [
             "model",
             [
-                "solve_pattern"
+                "model"
             ],
             "Base",
             true
@@ -1106,6 +1048,14 @@
         [
             "node",
             [
+                "electricity remote hub"
+            ],
+            "Base",
+            true
+        ],
+        [
+            "node",
+            [
                 "gas demand"
             ],
             "Base",
@@ -1115,14 +1065,6 @@
             "node",
             [
                 "gas hub"
-            ],
-            "Base",
-            true
-        ],
-        [
-            "node",
-            [
-                "remote electricity hub"
             ],
             "Base",
             true
@@ -1162,7 +1104,7 @@
         [
             "unit",
             [
-                "solar"
+                "solar unit"
             ],
             "Base",
             true
@@ -1170,10 +1112,32 @@
         [
             "unit",
             [
-                "wind"
+                "wind unit"
             ],
             "Base",
             true
+        ]
+    ],
+    "entity_groups": [
+        [
+            "node",
+            "gas unit_reserves_group",
+            "electricity hub"
+        ],
+        [
+            "node",
+            "gas unit_reserves_group",
+            "reserves"
+        ],
+        [
+            "node",
+            "nuclear unit_reserves_group",
+            "electricity hub"
+        ],
+        [
+            "node",
+            "nuclear unit_reserves_group",
+            "reserves"
         ]
     ],
     "parameter_value_lists": [
@@ -4555,13 +4519,6 @@
         [
             "connection",
             "electricity distribution",
-            "availability_factor",
-            1.0,
-            "Base"
-        ],
-        [
-            "connection",
-            "electricity distribution",
             "connection_type",
             "connection_type_normal",
             "Base"
@@ -4575,29 +4532,15 @@
         ],
         [
             "connection",
-            "electricity transport",
-            "availability_factor",
-            1.0,
-            "Base"
-        ],
-        [
-            "connection",
-            "electricity transport",
+            "electricity transmission",
             "connection_type",
             "connection_type_normal",
             "Base"
         ],
         [
             "connection",
-            "electricity transport",
+            "electricity transmission",
             "existing_connections",
-            1.0,
-            "Base"
-        ],
-        [
-            "connection",
-            "gas distribution",
-            "availability_factor",
             1.0,
             "Base"
         ],
@@ -4638,7 +4581,7 @@
         [
             "connection__from_node",
             [
-                "electricity transport",
+                "electricity transmission",
                 "electricity hub"
             ],
             "capacity_per_connection",
@@ -4648,8 +4591,8 @@
         [
             "connection__from_node",
             [
-                "electricity transport",
-                "remote electricity hub"
+                "electricity transmission",
+                "electricity remote hub"
             ],
             "capacity_per_connection",
             1000.0,
@@ -4700,9 +4643,9 @@
         [
             "connection__node__node",
             [
-                "electricity transport",
+                "electricity transmission",
                 "electricity hub",
-                "remote electricity hub"
+                "electricity remote hub"
             ],
             "fix_ratio_out_in_connection_flow",
             0.8,
@@ -4711,8 +4654,8 @@
         [
             "connection__node__node",
             [
-                "electricity transport",
-                "remote electricity hub",
+                "electricity transmission",
+                "electricity remote hub",
                 "electricity hub"
             ],
             "fix_ratio_out_in_connection_flow",
@@ -4764,7 +4707,7 @@
         [
             "connection__to_node",
             [
-                "electricity transport",
+                "electricity transmission",
                 "electricity hub"
             ],
             "capacity_per_connection",
@@ -4774,8 +4717,8 @@
         [
             "connection__to_node",
             [
-                "electricity transport",
-                "remote electricity hub"
+                "electricity transmission",
+                "electricity remote hub"
             ],
             "capacity_per_connection",
             1000.0,
@@ -4803,24 +4746,24 @@
         ],
         [
             "model",
-            "solve_pattern",
+            "model",
             "discount_rate",
             0.0,
             "Base"
         ],
         [
             "model",
-            "solve_pattern",
+            "model",
             "model_end",
             {
                 "type": "date_time",
-                "data": "2025-01-01T20:00:00"
+                "data": "2025-01-01T10:00:00"
             },
             "Base"
         ],
         [
             "model",
-            "solve_pattern",
+            "model",
             "model_start",
             {
                 "type": "date_time",
@@ -4846,32 +4789,7 @@
             "node",
             "electricity demand",
             "demand",
-            {
-                "data": {
-                    "2025-01-01T00:00:00": 60.0,
-                    "2025-01-01T01:00:00": 60.0,
-                    "2025-01-01T02:00:00": 60.0,
-                    "2025-01-01T03:00:00": 60.0,
-                    "2025-01-01T04:00:00": 60.0,
-                    "2025-01-01T05:00:00": 60.0,
-                    "2025-01-01T06:00:00": 60.0,
-                    "2025-01-01T07:00:00": 60.0,
-                    "2025-01-01T08:00:00": 60.0,
-                    "2025-01-01T09:00:00": 60.0,
-                    "2025-01-01T10:00:00": 100.0,
-                    "2025-01-01T11:00:00": 100.0,
-                    "2025-01-01T12:00:00": 100.0,
-                    "2025-01-01T13:00:00": 100.0,
-                    "2025-01-01T14:00:00": 100.0,
-                    "2025-01-01T15:00:00": 100.0,
-                    "2025-01-01T16:00:00": 100.0,
-                    "2025-01-01T17:00:00": 100.0,
-                    "2025-01-01T18:00:00": 100.0,
-                    "2025-01-01T19:00:00": 100.0
-                },
-                "index_name": "time step",
-                "type": "time_series"
-            },
+            20.0,
             "Base"
         ],
         [
@@ -4885,7 +4803,7 @@
             "node",
             "electricity hub",
             "existing_storages",
-            0.0,
+            1.0,
             "Base"
         ],
         [
@@ -4898,32 +4816,13 @@
         [
             "node",
             "electricity hub",
-            "storage_investment_cost",
-            800.0,
-            "Base"
-        ],
-        [
-            "node",
-            "electricity hub",
-            "storage_investment_variable_type",
-            "linear",
-            "Base"
-        ],
-        [
-            "node",
-            "electricity hub",
             "storage_state_fix",
             {
-                "index": {
-                    "start": "2025-01-01 00:00:00",
-                    "resolution": "1h",
-                    "ignore_year": false,
-                    "repeat": false
-                },
-                "data": [
-                    0.0
-                ],
-                "type": "time_series"
+                "type": "time_series",
+                "data": {
+                    "2024-12-31T23:00:00": 0.0,
+                    "2025-01-01T00:00:00": null
+                }
             },
             "Base"
         ],
@@ -4931,7 +4830,21 @@
             "node",
             "electricity hub",
             "storage_state_max",
-            100.0,
+            50.0,
+            "Base"
+        ],
+        [
+            "node",
+            "electricity remote hub",
+            "balance_penalty",
+            10000,
+            "Base"
+        ],
+        [
+            "node",
+            "electricity remote hub",
+            "balance_type",
+            "node_balance",
             "Base"
         ],
         [
@@ -4952,32 +4865,7 @@
             "node",
             "gas demand",
             "demand",
-            {
-                "data": {
-                    "2025-01-01T00:00:00": 60.0,
-                    "2025-01-01T02:00:00": 60.0,
-                    "2025-01-01T04:00:00": 60.0,
-                    "2025-01-01T06:00:00": 60.0,
-                    "2025-01-01T08:00:00": 60.0,
-                    "2025-01-01T10:00:00": 60.0,
-                    "2025-01-01T12:00:00": 60.0,
-                    "2025-01-01T14:00:00": 60.0,
-                    "2025-01-01T16:00:00": 60.0,
-                    "2025-01-01T18:00:00": 60.0,
-                    "2025-01-01T20:00:00": 100.0,
-                    "2025-01-01T22:00:00": 100.0,
-                    "2025-01-02T00:00:00": 100.0,
-                    "2025-01-02T02:00:00": 100.0,
-                    "2025-01-02T04:00:00": 100.0,
-                    "2025-01-02T06:00:00": 100.0,
-                    "2025-01-02T08:00:00": 100.0,
-                    "2025-01-02T10:00:00": 100.0,
-                    "2025-01-02T12:00:00": 100.0,
-                    "2025-01-02T14:00:00": 100.0
-                },
-                "index_name": "time step",
-                "type": "time_series"
-            },
+            20.0,
             "Base"
         ],
         [
@@ -4996,16 +4884,16 @@
         ],
         [
             "node",
-            "remote electricity hub",
-            "balance_penalty",
-            10000,
+            "gas unit_reserves_group",
+            "balance_type",
+            "none",
             "Base"
         ],
         [
             "node",
-            "remote electricity hub",
+            "nuclear unit_reserves_group",
             "balance_type",
-            "node_balance",
+            "none",
             "Base"
         ],
         [
@@ -5051,72 +4939,9 @@
             "Base"
         ],
         [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "cheap_high"
-            ],
-            "weight_relative_to_parents",
-            0.25,
-            "Base"
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "cheap_low"
-            ],
-            "weight_relative_to_parents",
-            0.25,
-            "Base"
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "expensive_high"
-            ],
-            "weight_relative_to_parents",
-            0.25,
-            "Base"
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "expensive_low"
-            ],
-            "weight_relative_to_parents",
-            0.25,
-            "Base"
-        ],
-        [
-            "stochastic_structure__stochastic_scenario",
-            [
-                "stochastic",
-                "realization"
-            ],
-            "stochastic_scenario_end",
-            {
-                "data": "0h",
-                "type": "duration"
-            },
-            "Base"
-        ],
-        [
             "temporal_block",
-            "gas time_solve_pattern_investments",
+            "gas time_model_investments",
             "resolution",
-            {
-                "data": "20h",
-                "type": "duration"
-            },
-            "Base"
-        ],
-        [
-            "temporal_block",
-            "gas time_solve_pattern_tb0",
-            "block_end",
             {
                 "data": "10h",
                 "type": "duration"
@@ -5125,7 +4950,17 @@
         ],
         [
             "temporal_block",
-            "gas time_solve_pattern_tb0",
+            "gas time_model_tb0",
+            "block_end",
+            {
+                "data": "2025-01-01T10:00:00",
+                "type": "date_time"
+            },
+            "Base"
+        ],
+        [
+            "temporal_block",
+            "gas time_model_tb0",
             "block_start",
             {
                 "data": "2025-01-01T00:00:00",
@@ -5135,7 +4970,7 @@
         ],
         [
             "temporal_block",
-            "gas time_solve_pattern_tb0",
+            "gas time_model_tb0",
             "resolution",
             {
                 "type": "duration",
@@ -5145,18 +4980,8 @@
         ],
         [
             "temporal_block",
-            "solve_pattern_investments",
+            "model_investments",
             "resolution",
-            {
-                "type": "duration",
-                "data": "20h"
-            },
-            "Base"
-        ],
-        [
-            "temporal_block",
-            "solve_pattern_tb0",
-            "block_end",
             {
                 "type": "duration",
                 "data": "10h"
@@ -5165,7 +4990,17 @@
         ],
         [
             "temporal_block",
-            "solve_pattern_tb0",
+            "model_tb0",
+            "block_end",
+            {
+                "type": "date_time",
+                "data": "2025-01-01T10:00:00"
+            },
+            "Base"
+        ],
+        [
+            "temporal_block",
+            "model_tb0",
             "block_start",
             {
                 "type": "date_time",
@@ -5175,7 +5010,7 @@
         ],
         [
             "temporal_block",
-            "solve_pattern_tb0",
+            "model_tb0",
             "resolution",
             {
                 "type": "duration",
@@ -5186,7 +5021,21 @@
         [
             "unit",
             "electricity import",
+            "availability_factor",
+            1.0,
+            "Base"
+        ],
+        [
+            "unit",
+            "electricity import",
             "existing_units",
+            1.0,
+            "Base"
+        ],
+        [
+            "unit",
+            "gas import",
+            "availability_factor",
             1.0,
             "Base"
         ],
@@ -5214,6 +5063,13 @@
         [
             "unit",
             "gas unit",
+            "investment_count_max_cumulative",
+            10.0,
+            "Base"
+        ],
+        [
+            "unit",
+            "gas unit",
             "investment_variable_type",
             "linear",
             "Base"
@@ -5221,28 +5077,15 @@
         [
             "unit",
             "gas unit",
-            "lifetime_economic",
-            {
-                "type": "duration",
-                "data": "50Y"
-            },
-            "Base"
-        ],
-        [
-            "unit",
-            "gas unit",
-            "lifetime_technical",
-            {
-                "type": "duration",
-                "data": "50Y"
-            },
-            "Base"
-        ],
-        [
-            "unit",
-            "gas unit",
             "unit_investment_cost",
             600.0,
+            "Base"
+        ],
+        [
+            "unit",
+            "nuclear unit",
+            "availability_factor",
+            1.0,
             "Base"
         ],
         [
@@ -5288,388 +5131,110 @@
         ],
         [
             "unit",
-            "solar",
+            "solar unit",
             "availability_factor",
             {
-                "index_type": "str",
-                "rank": 2,
+                "index": {
+                    "start": "2025-01-01 00:00:00",
+                    "resolution": "1h",
+                    "ignore_year": false,
+                    "repeat": false
+                },
                 "data": [
-                    [
-                        "realization",
-                        0.0
-                    ],
-                    [
-                        "cheap_low",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5
-                            ]
-                        }
-                    ],
-                    [
-                        "cheap_high",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6
-                            ]
-                        }
-                    ],
-                    [
-                        "expensive_low",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5,
-                                1.0,
-                                0.5,
-                                0.0,
-                                0.5
-                            ]
-                        }
-                    ],
-                    [
-                        "expensive_high",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6,
-                                1.0,
-                                0.6,
-                                0.2,
-                                0.6
-                            ]
-                        }
-                    ]
+                    1.0,
+                    0.5,
+                    0.0,
+                    0.5,
+                    1.0,
+                    0.5,
+                    0.0,
+                    0.5,
+                    1.0,
+                    0.5
                 ],
-                "type": "map"
+                "type": "time_series"
             },
             "Base"
         ],
         [
             "unit",
-            "solar",
+            "solar unit",
             "existing_units",
+            0.0,
+            "Base"
+        ],
+        [
+            "unit",
+            "solar unit",
+            "investment_count_max_cumulative",
             1.0,
             "Base"
         ],
         [
             "unit",
-            "solar",
+            "solar unit",
             "investment_variable_type",
             "linear",
             "Base"
         ],
         [
             "unit",
-            "solar",
-            "lifetime_economic",
-            {
-                "type": "duration",
-                "data": "50Y"
-            },
-            "Base"
-        ],
-        [
-            "unit",
-            "solar",
-            "lifetime_technical",
-            {
-                "type": "duration",
-                "data": "50Y"
-            },
-            "Base"
-        ],
-        [
-            "unit",
-            "solar",
+            "solar unit",
             "unit_investment_cost",
             200.0,
             "Base"
         ],
         [
             "unit",
-            "wind",
+            "wind unit",
             "availability_factor",
             {
-                "index_type": "str",
-                "rank": 2,
+                "index": {
+                    "start": "2025-01-01 00:00:00",
+                    "resolution": "1h",
+                    "ignore_year": false,
+                    "repeat": false
+                },
                 "data": [
-                    [
-                        "realization",
-                        0.0
-                    ],
-                    [
-                        "cheap_low",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0
-                            ]
-                        }
-                    ],
-                    [
-                        "expensive_high",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0
-                            ]
-                        }
-                    ],
-                    [
-                        "expensive_low",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0,
-                                0.0,
-                                1.0
-                            ]
-                        }
-                    ],
-                    [
-                        "cheap_high",
-                        {
-                            "type": "time_series",
-                            "index": {
-                                "start": "2025-01-01 00:00:00",
-                                "resolution": "1h",
-                                "ignore_year": false,
-                                "repeat": false
-                            },
-                            "data": [
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0,
-                                0.2,
-                                1.0
-                            ]
-                        }
-                    ]
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.0
                 ],
-                "type": "map"
+                "type": "time_series"
             },
             "Base"
         ],
         [
             "unit",
-            "wind",
+            "wind unit",
             "existing_units",
+            0.0,
+            "Base"
+        ],
+        [
+            "unit",
+            "wind unit",
+            "investment_count_max_cumulative",
             1.0,
             "Base"
         ],
         [
             "unit",
-            "wind",
+            "wind unit",
             "investment_variable_type",
             "linear",
             "Base"
         ],
         [
             "unit",
-            "wind",
-            "lifetime_economic",
-            {
-                "type": "duration",
-                "data": "50Y"
-            },
-            "Base"
-        ],
-        [
-            "unit",
-            "wind",
-            "lifetime_technical",
-            {
-                "type": "duration",
-                "data": "50Y"
-            },
-            "Base"
-        ],
-        [
-            "unit",
-            "wind",
+            "wind unit",
             "unit_investment_cost",
             200.0,
             "Base"
@@ -5678,7 +5243,7 @@
             "unit__to_node",
             [
                 "electricity import",
-                "remote electricity hub"
+                "electricity remote hub"
             ],
             "capacity_per_unit",
             10.0,
@@ -5688,37 +5253,10 @@
             "unit__to_node",
             [
                 "electricity import",
-                "remote electricity hub"
+                "electricity remote hub"
             ],
             "vom_cost",
-            {
-                "index_type": "str",
-                "rank": 1,
-                "data": [
-                    [
-                        "realization",
-                        40.0
-                    ],
-                    [
-                        "cheap_low",
-                        40.0
-                    ],
-                    [
-                        "cheap_high",
-                        40.0
-                    ],
-                    [
-                        "expensive_low",
-                        80.0
-                    ],
-                    [
-                        "expensive_high",
-                        80.0
-                    ]
-                ],
-                "index_name": "stochastic_scenario",
-                "type": "map"
-            },
+            40.0,
             "Base"
         ],
         [
@@ -5738,34 +5276,7 @@
                 "gas hub"
             ],
             "vom_cost",
-            {
-                "index_type": "str",
-                "rank": 1,
-                "data": [
-                    [
-                        "realization",
-                        10.0
-                    ],
-                    [
-                        "cheap_low",
-                        10.0
-                    ],
-                    [
-                        "cheap_high",
-                        10.0
-                    ],
-                    [
-                        "expensive_low",
-                        20.0
-                    ],
-                    [
-                        "expensive_high",
-                        20.0
-                    ]
-                ],
-                "index_name": "stochastic_scenario",
-                "type": "map"
-            },
+            10.0,
             "Base"
         ],
         [
@@ -5773,6 +5284,16 @@
             [
                 "gas unit",
                 "electricity hub"
+            ],
+            "capacity_per_unit",
+            10.0,
+            "Base"
+        ],
+        [
+            "unit__to_node",
+            [
+                "gas unit",
+                "gas unit_reserves_group"
             ],
             "capacity_per_unit",
             10.0,
@@ -5822,6 +5343,16 @@
             "unit__to_node",
             [
                 "nuclear unit",
+                "nuclear unit_reserves_group"
+            ],
+            "capacity_per_unit",
+            20.0,
+            "Base"
+        ],
+        [
+            "unit__to_node",
+            [
+                "nuclear unit",
                 "reserves"
             ],
             "capacity_per_unit",
@@ -5841,7 +5372,7 @@
         [
             "unit__to_node",
             [
-                "solar",
+                "solar unit",
                 "electricity demand"
             ],
             "capacity_per_unit",
@@ -5851,8 +5382,8 @@
         [
             "unit__to_node",
             [
-                "wind",
-                "remote electricity hub"
+                "wind unit",
+                "electricity remote hub"
             ],
             "capacity_per_unit",
             10.0,
