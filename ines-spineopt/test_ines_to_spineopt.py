@@ -111,6 +111,12 @@ def populate_source_db():
         add_ent("unit", ("pw_unit",))
         add_ent("node__to_unit", ("fuel_node", "pw_unit"))
         add_ent("unit__to_node", ("pw_unit", "elec_node"))
+        # Multi-output efficiency test (CHP unit)
+        add_ent("unit", ("chp_unit",))
+        add_ent("node", ("heat_node",))
+        add_ent("node__to_unit", ("fuel_node", "chp_unit"))
+        add_ent("unit__to_node", ("chp_unit", "elec_node"))
+        add_ent("unit__to_node", ("chp_unit", "heat_node"))
         add_ent(
             "unit_flow__unit_flow",
             ("gas_node", "gas_plant", "gas_plant", "elec_node"),
@@ -173,6 +179,7 @@ def populate_source_db():
 
         # === YAML-DRIVEN process_methods ===
         add_val("node", "node_type", ("gas_node",), "commodity")
+        add_val("node", "node_type", ("fuel_node",), "commodity")
         add_val("node", "node_type", ("storage_node",), "storage")
         add_val("node", "node_type", ("demand_node",), "balance")
         add_val("node", "storage_investment_method", ("storage_node",), "no_limits")
@@ -302,6 +309,13 @@ def populate_source_db():
         pw_eff_map = {"type": "map", "index_type": "float", "data": {"0.3": 0.35, "1.0": 0.42}}
         add_val("unit", "efficiency", ("pw_unit",), pw_eff_map)
         add_val("unit", "conversion_method", ("pw_unit",), "partial_load_efficiency")
+
+        # === process_efficiency: multi-output (CHP) ===
+        add_val("unit", "efficiency", ("chp_unit",), 0.9)
+        add_val("unit", "conversion_method", ("chp_unit",), "constant_efficiency")
+        add_val("unit__to_node", "conversion_coefficient", ("chp_unit", "elec_node"), 0.4)
+        add_val("unit__to_node", "conversion_coefficient", ("chp_unit", "heat_node"), 0.5)
+        add_val("node__to_unit", "conversion_coefficient", ("fuel_node", "chp_unit"), 1.0)
 
         # === process_constraints ===
         constraint_coeff_map = {"type": "map", "index_type": "str", "data": {"co2_limit": 1.5}}
@@ -494,6 +508,16 @@ def verify_results():
         ("unit_flow__unit_flow", "flow_ratio_equality_coefficient",
          ("fuel_node", "pw_unit", "pw_unit", "elec_node"), "piecewise efficiency ratio"),
 
+        # === From process_efficiency: multi-output (CHP) ===
+        ("user_constraint", "constraint_sense", ("chp_unit_efficiency",), "chp efficiency sense"),
+        ("user_constraint", "right_hand_side", ("chp_unit_efficiency",), "chp efficiency rhs"),
+        ("unit_flow__user_constraint", "coefficient_for_unit_flow",
+         ("chp_unit", "elec_node", "chp_unit_efficiency"), "chp elec output coeff"),
+        ("unit_flow__user_constraint", "coefficient_for_unit_flow",
+         ("chp_unit", "heat_node", "chp_unit_efficiency"), "chp heat output coeff"),
+        ("unit_flow__user_constraint", "coefficient_for_unit_flow",
+         ("fuel_node", "chp_unit", "chp_unit_efficiency"), "chp fuel input coeff"),
+
         # === From process_emissions: CO2 ===
         ("node", "storage_active", ("atmosphere",), "atmosphere storage_active"),
         ("node", "storage_state_max", ("atmosphere",), "atmosphere storage_state_max"),
@@ -624,7 +648,6 @@ def verify_results():
 
         # === Node penalty defaults ===
         ("node", "balance_penalty", ("storage_node",), "default node penalty on storage_node"),
-        ("node", "balance_penalty", ("fuel_node",), "default node penalty on fuel_node"),
         ("node", "balance_penalty", ("demand_node",), "default node penalty on demand_node"),
     ]
 

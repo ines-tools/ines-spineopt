@@ -1550,6 +1550,14 @@ def process_emissions(source_db, target_db):
         except RuntimeError:
             pass
 
+        # If no emission limits, set balance_type to "none" to avoid balance_penalty
+        if not cumul_limits and not period_limits:
+            default_alt = target_db.get_alternative_items()[0]["name"]
+            add_parameter_value(
+                target_db, "node", "balance_type",
+                default_alt, (emission_node,), "none",
+            )
+
         # Cumulative limits
         _process_cumulative_emission_limits(target_db, emission_node, cumul_limits, periods_info)
 
@@ -3305,11 +3313,11 @@ def process_efficiency(source_db, target_db):
 
         if conversion_method == "constant_efficiency":
             _process_constant_efficiency(
-                target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
+                source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
             )
         elif conversion_method in ("partial_load_efficiency", "piecewise_linear", "piecewise_SOS2"):
             _process_piecewise_efficiency(
-                target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
+                source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
             )
 
     try:
@@ -3320,40 +3328,117 @@ def process_efficiency(source_db, target_db):
         print("commit efficiency conversions error:", e)
 
 
-def _process_constant_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
-    """Handle constant_efficiency: set flow_ratio_equality_coefficient = efficiency for each (out, in) pair."""
-    for out_node in unit_outputs:
+def _process_constant_efficiency(source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
+    """Handle constant_efficiency.
+
+    Single input + single output: set flow_ratio_equality_coefficient = efficiency.
+    Multiple inputs or outputs: create user_constraint with unit_flow coefficients.
+    """
+    if len(unit_inputs) == 1 and len(unit_outputs) == 1:
+        # Simple case: single input, single output → flow_ratio_equality_coefficient
+        out_node = unit_outputs[0]
+        in_node = unit_inputs[0]
+        if out_node == in_node:
+            return
+        uf_byname = (unit_name, out_node, in_node, unit_name)
+        existing = target_db.get_entity_item(
+            entity_class_name="unit_flow__unit_flow", entity_byname=uf_byname
+        )
+        if not existing:
+            try:
+                add_entity(target_db, "unit_flow__unit_flow", uf_byname)
+            except RuntimeError:
+                pass
+        existing_param = target_db.get_parameter_value_item(
+            entity_class_name="unit_flow__unit_flow",
+            entity_byname=uf_byname,
+            parameter_definition_name="flow_ratio_equality_coefficient",
+            alternative_name=alt,
+        )
+        if not existing_param:
+            add_parameter_value(
+                target_db, "unit_flow__unit_flow",
+                "flow_ratio_equality_coefficient", alt, uf_byname, efficiency,
+            )
+    else:
+        # Multiple inputs or outputs: use user_constraint
+        constraint_name = unit_name + "_efficiency"
+        try:
+            add_entity(target_db, "user_constraint", (constraint_name,))
+        except RuntimeError:
+            pass
+        try:
+            add_parameter_value(
+                target_db, "user_constraint", "constraint_sense",
+                alt, (constraint_name,), "==",
+            )
+        except RuntimeError:
+            pass
+        try:
+            add_parameter_value(
+                target_db, "user_constraint", "right_hand_side",
+                alt, (constraint_name,), 0.0,
+            )
+        except RuntimeError:
+            pass
+
+        # Output flows: coefficient = conversion_coefficient (or 1.0)
+        for out_node in unit_outputs:
+            out_coeff = 1.0
+            for cc_item in source_db.get_parameter_value_items(
+                entity_class_name="unit__to_node",
+                parameter_definition_name="conversion_coefficient",
+            ):
+                if cc_item["entity_byname"] == (unit_name, out_node):
+                    out_coeff = cc_item["parsed_value"]
+                    break
+            uf_uc_byname = (unit_name, out_node, constraint_name)
+            try:
+                add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
+            except RuntimeError:
+                pass
+            add_parameter_value(
+                target_db, "unit_flow__user_constraint",
+                "coefficient_for_unit_flow", alt, uf_uc_byname, out_coeff,
+            )
+
+        # Input flows: coefficient = -1 * conversion_coefficient * efficiency
         for in_node in unit_inputs:
-            if out_node == in_node:
-                continue
-            uf_byname = (unit_name, out_node, in_node, unit_name)
-            existing = target_db.get_entity_item(
-                entity_class_name="unit_flow__unit_flow", entity_byname=uf_byname
-            )
-            if not existing:
-                try:
-                    add_entity(target_db, "unit_flow__unit_flow", uf_byname)
-                except RuntimeError:
-                    pass
-            existing_param = target_db.get_parameter_value_item(
-                entity_class_name="unit_flow__unit_flow",
-                entity_byname=uf_byname,
-                parameter_definition_name="flow_ratio_equality_coefficient",
-                alternative_name=alt,
-            )
-            if not existing_param:
-                add_parameter_value(
-                    target_db, "unit_flow__unit_flow",
-                    "flow_ratio_equality_coefficient", alt, uf_byname, efficiency,
+            in_coeff = 1.0
+            for cc_item in source_db.get_parameter_value_items(
+                entity_class_name="node__to_unit",
+                parameter_definition_name="conversion_coefficient",
+            ):
+                if cc_item["entity_byname"] == (in_node, unit_name):
+                    in_coeff = cc_item["parsed_value"]
+                    break
+            if isinstance(efficiency, Map):
+                # Create a Map with same indexes, values = -1 * in_coeff * eff_value
+                coeff_values = [-1.0 * in_coeff * float(v) for v in efficiency.values]
+                coeff_map = Map(
+                    indexes=list(efficiency.indexes),
+                    values=coeff_values,
+                    index_name=efficiency.index_name,
                 )
+                input_coefficient = coeff_map
+            else:
+                input_coefficient = -1.0 * in_coeff * efficiency
+            uf_uc_byname = (in_node, unit_name, constraint_name)
+            try:
+                add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
+            except RuntimeError:
+                pass
+            add_parameter_value(
+                target_db, "unit_flow__user_constraint",
+                "coefficient_for_unit_flow", alt, uf_uc_byname, input_coefficient,
+            )
 
 
-def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
+def _process_piecewise_efficiency(source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
     """Handle piecewise efficiency (partial_load, piecewise_linear, piecewise_SOS2).
 
-    Extracts operating points and efficiencies from the efficiency Map,
-    computes incremental flow ratios, sets operating_points and minimum_operating_point
-    on input flows, and constraint_equality_flow_ratio as array on unit_flow__unit_flow.
+    Single input + single output: uses unit_flow__unit_flow with operating_points and flow ratios.
+    Multiple inputs or outputs: uses user_constraint with array coefficients.
     """
     if not isinstance(efficiency, Map):
         return
@@ -3365,7 +3450,6 @@ def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs
         return
 
     # Set operating_points and minimum_operating_point on output flows
-    #op_array = {"type": "array", "data": operating_points}
     min_op = operating_points[0]
     for out_node in unit_outputs:
         try:
@@ -3383,54 +3467,111 @@ def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs
         except RuntimeError:
             pass
 
-    # Compute incremental flow ratios for each segment
-    incremental_ratios = [1/eff for eff in efficiencies]
-    ratio_array = api.Array(incremental_ratios)
-    for out_node in unit_outputs:
-        for in_node in unit_inputs:
-            if out_node == in_node:
-                continue
-            uf_byname = (in_node, unit_name, unit_name, out_node)
+    if len(unit_inputs) == 1 and len(unit_outputs) == 1:
+        # Simple case: single input, single output → unit_flow__unit_flow
+        incremental_ratios = [1/eff for eff in efficiencies]
+        ratio_array = api.Array(incremental_ratios)
+        out_node = unit_outputs[0]
+        in_node = unit_inputs[0]
+        if out_node == in_node:
+            return
+        uf_byname = (in_node, unit_name, unit_name, out_node)
+        try:
+            add_entity(target_db, "unit_flow__unit_flow", uf_byname)
+        except RuntimeError:
+            pass
+        existing_param = target_db.get_parameter_value_item(
+            entity_class_name="unit_flow__unit_flow",
+            entity_byname=uf_byname,
+            parameter_definition_name="flow_ratio_equality_coefficient",
+            alternative_name=alt,
+        )
+        if not existing_param:
+            add_parameter_value(
+                target_db, "unit_flow__unit_flow",
+                "flow_ratio_equality_coefficient", alt, uf_byname, ratio_array,
+            )
+    else:
+        # Multiple inputs or outputs: use user_constraint with array coefficients
+        constraint_name = unit_name + "_efficiency"
+        try:
+            add_entity(target_db, "user_constraint", (constraint_name,))
+        except RuntimeError:
+            pass
+        try:
+            add_parameter_value(
+                target_db, "user_constraint", "constraint_sense",
+                alt, (constraint_name,), "==",
+            )
+        except RuntimeError:
+            pass
+        try:
+            add_parameter_value(
+                target_db, "user_constraint", "right_hand_side",
+                alt, (constraint_name,), 0.0,
+            )
+        except RuntimeError:
+            pass
+
+        # Output flows: coefficient = array of conversion_coefficient (or 1.0)
+        for out_node in unit_outputs:
+            out_coeff = 1.0
+            for cc_item in source_db.get_parameter_value_items(
+                entity_class_name="unit__to_node",
+                parameter_definition_name="conversion_coefficient",
+            ):
+                if cc_item["entity_byname"] == (unit_name, out_node):
+                    out_coeff = cc_item["parsed_value"]
+                    break
+            # Create array with same value for each operating point
+            out_coeff_array = api.Array([out_coeff] * len(operating_points))
+            uf_uc_byname = (unit_name, out_node, constraint_name)
             try:
-                add_entity(target_db, "unit_flow__unit_flow", uf_byname)
+                add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
             except RuntimeError:
                 pass
-            existing_param = target_db.get_parameter_value_item(
-                entity_class_name="unit_flow__unit_flow",
-                entity_byname=uf_byname,
-                parameter_definition_name="flow_ratio_equality_coefficient",
-                alternative_name=alt,
+            add_parameter_value(
+                target_db, "unit_flow__user_constraint",
+                "coefficient_for_unit_flow", alt, uf_uc_byname, out_coeff_array,
             )
-            if not existing_param:
-                add_parameter_value(
-                    target_db, "unit_flow__unit_flow",
-                    "flow_ratio_equality_coefficient", alt, uf_byname, ratio_array,
-                )
+
+        # Input flows: coefficient = array of -1 * conversion_coefficient * efficiency
+        for in_node in unit_inputs:
+            in_coeff = 1.0
+            for cc_item in source_db.get_parameter_value_items(
+                entity_class_name="node__to_unit",
+                parameter_definition_name="conversion_coefficient",
+            ):
+                if cc_item["entity_byname"] == (in_node, unit_name):
+                    in_coeff = cc_item["parsed_value"]
+                    break
+            coeff_values = [-1.0 * in_coeff * eff for eff in efficiencies]
+            input_coeff_array = api.Array(coeff_values)
+            uf_uc_byname = (in_node, unit_name, constraint_name)
+            try:
+                add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
+            except RuntimeError:
+                pass
+            add_parameter_value(
+                target_db, "unit_flow__user_constraint",
+                "coefficient_for_unit_flow", alt, uf_uc_byname, input_coeff_array,
+            )
 
 
 def process_conversion_coefficients(source_db, target_db):
-    """Convert INES conversion_coefficients to SpineOpt flow_ratio_equality_coefficient on unit_flow__unit_flow."""
+    """Convert INES conversion_coefficients to SpineOpt flow_ratio_equality_coefficient on unit_flow__unit_flow.
 
-    # Collect units that have efficiency defined (those are handled by process_efficiency)
-    units_with_efficiency = set()
-    for eff_param in source_db.get_parameter_value_items(
-        entity_class_name="unit", parameter_definition_name="efficiency"
-    ):
-        method_items = source_db.get_parameter_value_items(
-            entity_class_name="unit",
-            entity_byname=eff_param["entity_byname"],
-            parameter_definition_name="conversion_method",
-        )
-        method_item = method_items[0] if method_items else None
-        conversion_method = method_item["parsed_value"] if method_item else "constant_efficiency"
-        if conversion_method not in ("coefficients_only", "piecewise_linear_for_each_flow"):
-            units_with_efficiency.add(eff_param["entity_byname"][0])
+    If efficiency already set the flow ratio, multiply by the coefficient ratio."""
 
     for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
         unit_name = unit_entity["name"]
 
-        # Skip units where efficiency already set the flow ratios
-        if unit_name in units_with_efficiency:
+        # Skip units that use efficiency user_constraint (multi-input/output)
+        eff_constraint = target_db.get_entity_item(
+            entity_class_name="user_constraint",
+            entity_byname=(unit_name + "_efficiency",),
+        )
+        if eff_constraint:
             continue
 
         # Find output nodes (unit__to_node in both INES and SpineOpt)
@@ -3491,7 +3632,7 @@ def process_conversion_coefficients(source_db, target_db):
                         ratio = out_coeff
                     # entity_byname: (out_flow_unit, out_flow_node, in_flow_node, in_flow_unit)
                     uf_byname = (unit_name, out_node, in_node, unit_name)
-                    # Check if unit_flow__unit_flow already exists (e.g. from unit_flow_variants)
+                    # Check if unit_flow__unit_flow already exists (e.g. from efficiency or unit_flow_variants)
                     existing = target_db.get_entity_item(
                         entity_class_name="unit_flow__unit_flow",
                         entity_byname=uf_byname,
@@ -3502,14 +3643,28 @@ def process_conversion_coefficients(source_db, target_db):
                             "unit_flow__unit_flow",
                             uf_byname,
                         )
-                    # Check if ratio is already set by unit_flow_variants
+                    # Check if ratio is already set (e.g. by efficiency or unit_flow_variants)
                     existing_param = target_db.get_parameter_value_item(
                         entity_class_name="unit_flow__unit_flow",
                         entity_byname=uf_byname,
                         parameter_definition_name="flow_ratio_equality_coefficient",
                         alternative_name=alt,
                     )
-                    if not existing_param:
+                    if existing_param and isinstance(ratio, (int, float)):
+                        # Multiply existing value by coefficient ratio
+                        existing_val = existing_param["parsed_value"]
+                        if isinstance(existing_val, (int, float)):
+                            combined = existing_val * ratio
+                            db_val, val_type = api.to_database(combined)
+                            target_db.update_parameter_value_item(
+                                entity_class_name="unit_flow__unit_flow",
+                                entity_byname=uf_byname,
+                                parameter_definition_name="flow_ratio_equality_coefficient",
+                                alternative_name=alt,
+                                value=db_val,
+                                type=val_type,
+                            )
+                    elif not existing_param:
                         add_parameter_value(
                             target_db,
                             "unit_flow__unit_flow",
@@ -3819,18 +3974,33 @@ def process_system_discount_rate(source_db, target_db):
 
 def process_node_penalty(source_db, target_db, default_penalty):
     """Set balance_penalty on all nodes. Use penalty_upward if available, otherwise default.
-    Skips commodity nodes (node_type: commodity)."""
+    Skips commodity nodes (node_type: commodity) and nodes without a node_type."""
     default_alt = target_db.get_alternative_items()[0]["name"]
-    # Collect commodity node names to exclude
-    commodity_nodes = set()
+    # Collect node types; skip nodes with no node_type or node_type == "commodity"
+    skip_nodes = set()
+    none_type_nodes = set()
+    nodes_with_type = set()
     for pv in source_db.get_parameter_value_items(
         entity_class_name="node", parameter_definition_name="node_type"
     ):
+        nodes_with_type.add(pv["entity_byname"][0])
         if pv["parsed_value"] == "commodity":
-            commodity_nodes.add(pv["entity_byname"][0])
+            skip_nodes.add(pv["entity_byname"][0])
+        elif pv["parsed_value"] is None:
+            skip_nodes.add(pv["entity_byname"][0])
+            none_type_nodes.add(pv["entity_byname"][0])
+    # Set balance_type "none" for nodes with node_type None
+    for node_name in none_type_nodes:
+        try:
+            add_parameter_value(
+                target_db, "node", "balance_type",
+                default_alt, (node_name,), "none",
+            )
+        except RuntimeError:
+            pass
     for node_entity in target_db.get_entity_items(entity_class_name="node"):
         node_name = node_entity["entity_byname"][0]
-        if node_name in commodity_nodes:
+        if node_name in skip_nodes or node_name not in nodes_with_type:
             continue
         # Skip nodes with balance_type "none"
         bt_items = target_db.get_parameter_value_items(
