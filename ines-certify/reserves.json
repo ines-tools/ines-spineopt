@@ -587,7 +587,7 @@
         ],
         [
             "node",
-            "cheap_reserve_group",
+            "cheap unit_reserves_group",
             null
         ],
         [
@@ -607,7 +607,7 @@
         ],
         [
             "node",
-            "expensive_reserve_group",
+            "expensive unit_reserves_group",
             null
         ],
         [
@@ -796,7 +796,7 @@
             "unit__to_node",
             [
                 "cheap unit",
-                "cheap_reserve_group"
+                "cheap unit_reserves_group"
             ],
             null
         ],
@@ -820,7 +820,7 @@
             "unit__to_node",
             [
                 "expensive unit",
-                "expensive_reserve_group"
+                "expensive unit_reserves_group"
             ],
             null
         ],
@@ -1000,22 +1000,22 @@
     "entity_groups": [
         [
             "node",
-            "cheap_reserve_group",
+            "cheap unit_reserves_group",
             "cheap supply"
         ],
         [
             "node",
-            "cheap_reserve_group",
+            "cheap unit_reserves_group",
             "reserves"
         ],
         [
             "node",
-            "expensive_reserve_group",
+            "expensive unit_reserves_group",
             "expensive supply"
         ],
         [
             "node",
-            "expensive_reserve_group",
+            "expensive unit_reserves_group",
             "reserves"
         ]
     ],
@@ -4673,7 +4673,7 @@
         ],
         [
             "node",
-            "cheap_reserve_group",
+            "cheap unit_reserves_group",
             "balance_type",
             "none",
             "Base"
@@ -4722,7 +4722,7 @@
         ],
         [
             "node",
-            "expensive_reserve_group",
+            "expensive unit_reserves_group",
             "balance_type",
             "none",
             "Base"
@@ -4854,7 +4854,7 @@
             "unit__to_node",
             [
                 "cheap unit",
-                "cheap_reserve_group"
+                "cheap unit_reserves_group"
             ],
             "capacity_per_unit",
             10.0,
@@ -4867,7 +4867,7 @@
                 "reserves"
             ],
             "capacity_per_unit",
-            2.0,
+            3.0,
             "Base"
         ],
         [
@@ -4877,7 +4877,7 @@
                 "reserves"
             ],
             "reserve_procurement_cost",
-            2.0,
+            3.0,
             "Base"
         ],
         [
@@ -4894,7 +4894,7 @@
             "unit__to_node",
             [
                 "expensive unit",
-                "expensive_reserve_group"
+                "expensive unit_reserves_group"
             ],
             "capacity_per_unit",
             100.0,
@@ -4907,7 +4907,7 @@
                 "reserves"
             ],
             "capacity_per_unit",
-            3.0,
+            2.0,
             "Base"
         ],
         [
@@ -4917,7 +4917,7 @@
                 "reserves"
             ],
             "reserve_procurement_cost",
-            3.0,
+            2.0,
             "Base"
         ],
         [
