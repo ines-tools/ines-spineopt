@@ -160,7 +160,6 @@ def main():
 
             # Default parameters
             default_parameters(target_db,settings["default_parameters"])
-            candidates_to_number_of(target_db)
 
             # existing capacity 
             existing_capacity(source_db,target_db)
@@ -182,20 +181,20 @@ def process_emissions(source_db, target_db):
     co2_value  = {co2_param["entity_name"]:co2_param["parsed_value"] for co2_param in co2_params if co2_param["entity_name"] != "CO2"}
 
     for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
-        unit__from_nodes = [from_node for from_node in co2_value if target_db.get_entity_item(entity_class_name = "unit__from_node",entity_byname = (unit_entity["name"],from_node))]       
+        unit__from_nodes = [from_node for from_node in co2_value if target_db.get_entity_item(entity_class_name = "node__to_unit",entity_byname = (from_node,unit_entity["name"]))]       
         unit_name = unit_entity["name"]
         if len(unit__from_nodes) > 1:
             add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
             add_entity(target_db,"user_constraint",(unit_name+"_emissions",))
-            add_entity(target_db,"unit__to_node__user_constraint",(unit_name,"atmosphere",unit_name+"_emissions"))
-            add_parameter_value(target_db,"unit__to_node__user_constraint","unit_flow_coefficient","Base",(unit_name,"atmosphere",unit_name+"_emissions"),-1.0)
+            add_entity(target_db,"unit_flow__user_constraint",(unit_name,"atmosphere",unit_name+"_emissions"))
+            add_parameter_value(target_db,"unit_flow__user_constraint","coefficient_for_unit_flow","Base",(unit_name,"atmosphere",unit_name+"_emissions"),-1.0)
             for from_node in unit__from_nodes:
-                add_entity(target_db,"unit__from_node__user_constraint",(unit_name,from_node,unit_name+"_emissions"))
-                add_parameter_value(target_db,"unit__from_node__user_constraint","unit_flow_coefficient","Base",(unit_name,from_node,unit_name+"_emissions"),co2_value[from_node])
+                add_entity(target_db,"unit_flow__user_constraint",(from_node,unit_name,unit_name+"_emissions"))
+                add_parameter_value(target_db,"unit_flow__user_constraint","coefficient_for_unit_flow","Base",(from_node,unit_name,unit_name+"_emissions"),co2_value[from_node])
         elif len(unit__from_nodes) == 1:
             add_entity(target_db,"unit__to_node",(unit_name,"atmosphere"))
-            add_entity(target_db,"unit__node__node",(unit_name,"atmosphere",unit__from_nodes[0]))
-            add_parameter_value(target_db,"unit__node__node","fix_ratio_out_in_unit_flow","Base",(unit_name,"atmosphere",unit__from_nodes[0]),co2_value[unit__from_nodes[0]])
+            add_entity(target_db,"unit_flow__unit_flow",(unit_name,"atmosphere",unit__from_nodes[0],unit_name))
+            add_parameter_value(target_db,"unit_flow__unit_flow","flow_ratio_equality_coefficient","Base",(unit_name,"atmosphere",unit__from_nodes[0],unit_name),co2_value[unit__from_nodes[0]])
 
     try:
         target_db.commit_session("Added process capacities")
@@ -412,7 +411,7 @@ def storage_state_fix_method(source_db,target_db):
                                         vals_.append((multiplier if isinstance(multiplier,float) else multiplier[period])*target_value_)
                                         vals_.append(None)
                                     target_ts_ = {"type":"time_series","data":dict(zip(indexes_,vals_))}
-                                    add_parameter_value(target_db,"node","fix_node_state",alternative_name,value_["entity_byname"],target_ts_)
+                                    add_parameter_value(target_db,"node","storage_state_fix",alternative_name,value_["entity_byname"],target_ts_)
                 else:
                     print("WARNING: FIXED STATE DOES NOT EXIST ", storage_method["entity_byname"])
         
@@ -448,9 +447,9 @@ def limiting_investments_notallowed(source_db,target_db):
     retirement_method = {"unit":"retirement_method","link":"retirement_method","node":"storage_retirement_method"}
     target_candi = {"unit":"units_existing","link":"links_existing","node":"storages_existing"}
     target_class = {"unit":"unit","link":"connection","node":"node"}
-    target_param = {"unit":"candidate_units","link":"candidate_connections","node":"candidate_storages"}
-    fix_param = {"unit":"fix_units_invested","link":"fix_connections_invested","node":"fix_storages_invested"}
-    fix_av_param = {"unit":"fix_units_invested_available","link":"fix_connections_invested_available","node":"fix_storages_invested_available"}
+    target_param = {"unit":"investment_count_max_cumulative","link":"investment_count_max_cumulative","node":"storage_investment_count_max_cumulative"}
+    fix_param = {"unit":"investment_count_fix_new","link":"investment_count_fix_new","node":"storage_investment_count_fix_new"}
+    fix_av_param = {"unit":"investment_count_fix_cumulative","link":"investment_count_fix_cumulative","node":"storage_investment_count_fix_cumulative"}
     starttime = {} 
     year_repr = {} 
 
@@ -529,7 +528,7 @@ def set_to_entities_and_parameters(source_db,target_db):
                     print("Entity already created","investment_group",source_dict_parameter["entity_byname"])
                 except:
                     pass
-                add_parameter_value(target_db,"investment_group","maximum_entities_invested_available",source_dict_parameter["alternative_name"],source_dict_parameter["entity_byname"],source_dict_parameter["parsed_value"])
+                add_parameter_value(target_db,"investment_group","investment_count_total_max_cumulative",source_dict_parameter["alternative_name"],source_dict_parameter["entity_byname"],source_dict_parameter["parsed_value"])
                 for entity_relation, list_relation in source_relationships.items():
                     if entity_relation == "set__unit":
                         for names_relation in list_relation:
@@ -549,15 +548,15 @@ def set_to_entities_and_parameters(source_db,target_db):
                     for entity_relation, names_relation in source_relationships.items():
                         if entity_relation == "set__unit_flow":
                             source_flow = source_db.get_entity_items(entity_byname = names_relation[1:])[0]["entity_class_name"]
-                            target_entity_class = "unit__from_node" if source_flow == "node__to_unit" else "unit__to_node"
-                            target_entity_names = (names_relation[2],names_relation[1]) if source_flow == "node__to_unit" else (names_relation[1],names_relation[2])
+                            target_entity_class = "node__to_unit" if source_flow == "node__to_unit" else "unit__to_node"
+                            target_entity_names = (names_relation[1],names_relation[2])
                             try:
                                 add_entity(target_db,target_entity_class,target_entity_names)
                             except:
                                 pass
                             model_duration_hours = pd.Timedelta(model_duration) / pd.Timedelta(resolution)
                             param_value = model_duration_hours * source_dict_parameter["parsed_value"]
-                            add_parameter_value(target_db,target_entity_class,"max_total_cumulated_unit_flow_to_node",source_dict_parameter["alternative_name"],target_entity_names,param_value)
+                            add_parameter_value(target_db,target_entity_class,"flow_limits_max_cumulative",source_dict_parameter["alternative_name"],target_entity_names,param_value)
                 else:
                     pass
     try:
@@ -580,21 +579,10 @@ def default_parameters(target_db,settings):
     except:
         print("commit default_parameters error")  
 
-def candidates_to_number_of(target_db):
-    parameter_conversion = {"candidate_units":"number_of_units","candidate_connections":"number_of_connections","candidate_storages":"number_of_storages"}
-    for parameter_name in parameter_conversion:
-        for param_map in target_db.get_parameter_value_items(parameter_definition_name = parameter_name):
-            add_parameter_value(target_db,param_map["entity_class_name"],parameter_conversion[parameter_name],param_map["alternative_name"],param_map["entity_byname"],0.0)
-
-    try:
-        target_db.commit_session("Added candidate to number of")
-    except:
-        print("commit candidate to number of error")
-
 def existing_capacity(source_db,target_db):
 
     entity_map = {"unit":"unit","node":"node","link":"connection"}
-    parameter_conversion = {"units_existing":"initial_units_invested_available","links_existing":"initial_connections_invested_available","storages_existing":"initial_storages_invested_available"}
+    parameter_conversion = {"units_existing":"investment_count_initial_cumulative","links_existing":"investment_count_initial_cumulative","storages_existing":"storage_investment_count_initial_cumulative"}
     for source_parameter in parameter_conversion:
         target_parameter = parameter_conversion[source_parameter]
         for param_map in source_db.get_parameter_value_items(parameter_definition_name = source_parameter):
@@ -634,29 +622,18 @@ def lifetime_to_duration(source_db,target_db,settings):
 
 def unit_flow_variants(source_db,target_db,settings):
 
-    parameters_mapping = {"equality_ratio":"fix_ratio","less_than_ratio":"max_ratio_","greater_than_ration":"min_ratio_"}
+    parameters_mapping = {"equality_ratio":"flow_ratio_equality_coefficient","less_than_ratio":"flow_ratio_less_than_coefficient","greater_than_ratio":"flow_ratio_greater_than_coefficient"}
     for param_map in source_db.get_parameter_value_items(entity_class_name = "unit_flow__unit_flow"):
 
+        target_parameter = parameters_mapping[param_map["parameter_definition_name"]]
 
-        unit_flow_1 = (param_map["entity_byname"][0],param_map["entity_byname"][1])
-        unit_flow_2 = (param_map["entity_byname"][2],param_map["entity_byname"][3])
-
-        entity_1 = source_db.get_entity_items(entity_byname = unit_flow_1)[0]["entity_class_name"]
-        entity_2 = source_db.get_entity_items(entity_byname = unit_flow_2)[0]["entity_class_name"]
-
-        flow_direction_1 = "in" if entity_1 == "node__to_unit" else "out"
-        flow_direction_2 = "in" if entity_2 == "node__to_unit" else "out"
-
-        unit_name = unit_flow_1[1] if entity_1 == "node__to_unit" else unit_flow_1[0] 
-        node_1 = unit_flow_1[0] if entity_1 == "node__to_unit" else unit_flow_1[1] 
-        node_2 = unit_flow_2[0] if entity_2 == "node__to_unit" else unit_flow_2[1] 
-
-        target_parameter = parameters_mapping[param_map["parameter_definition_name"]]+f"_{flow_direction_1}_{flow_direction_2}_unit_flow"
-
-        add_entity(target_db,"unit__node__node",(unit_name,node_1,node_2))
+        try:
+            add_entity(target_db,"unit_flow__unit_flow",param_map["entity_byname"])
+        except:
+            pass
         
         if param_map["type"] == "float":
-            add_parameter_value(target_db,"unit__node__node",target_parameter,param_map["alternative_name"],(unit_name,node_1,node_2),param_map["parsed_value"])
+            add_parameter_value(target_db,"unit_flow__unit_flow",target_parameter,param_map["alternative_name"],param_map["entity_byname"],param_map["parsed_value"])
         
         elif param_map["type"] == "map":
             
@@ -687,7 +664,7 @@ def unit_flow_variants(source_db,target_db,settings):
                 values_.append(values_[-1]) 
                 indexes_.append((pd.Timestamp(ts_index_).replace(year=int(pd.Timestamp(ts_index_).year+year_repr[period_]))).isoformat())
                 ts_export = {"type": "time_series","data": dict(zip(indexes_,values_))}
-                add_parameter_value(target_db,"unit__node__node",target_parameter,param_map["alternative_name"],(unit_name,node_1,node_2),ts_export)
+                add_parameter_value(target_db,"unit_flow__unit_flow",target_parameter,param_map["alternative_name"],param_map["entity_byname"],ts_export)
 
             if any(i in data.index for i in starttime_sp):
                 for index, element in enumerate(starttime_sp):
@@ -699,7 +676,7 @@ def unit_flow_variants(source_db,target_db,settings):
                     steps = pd.to_timedelta(duration) / pd.to_timedelta(resolution)
                     df_data = (data.iloc[data.index.tolist().index(element):data.index.tolist().index(element)+int(steps),data.columns.tolist().index("value")]).tolist()
                     ts_export = {"type": "time_series","data": df_data,"index": {"start": f"2018{element[4:]}","resolution": resolution,"ignore_year": True}}
-                    add_parameter_value(target_db,"unit__node__node",target_parameter,alternative_name,(unit_name,node_1,node_2),ts_export)
+                    add_parameter_value(target_db,"unit_flow__unit_flow",target_parameter,alternative_name,param_map["entity_byname"],ts_export)
                    
 
     try:
@@ -721,7 +698,7 @@ def flow_profile_method(source_db,target_db):
         if flow_method["parsed_value"] == "scale_to_annual":
             target_name = param_map["entity_name"]+"-group"
             add_entity(target_db,"node",(target_name,))
-            add_parameter_value(target_db,"node","balance_type","Base",(target_name,),"balance_type_none")
+            add_parameter_value(target_db,"node","balance_type","Base",(target_name,),"none")
             add_entity_group(target_db,"node",target_name,param_map["entity_name"])
             definition_condition = True
         elif flow_method["parsed_value"] == "use_profile_directly":

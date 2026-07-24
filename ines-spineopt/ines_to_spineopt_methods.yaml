@@ -2,21 +2,20 @@ node:
   node: 
     node_type:
       commodity: 
-        balance_type: balance_type_none
+        balance_type: none
       storage:
-        storage_investment_variable_type: storage_investment_variable_type_continuous
-        has_state: True
+        storage_active: True
     storage_investment_method:
       no_limits: 
-        candidate_storages: 10000.0
+        storage_investment_count_max_cumulative: 10000.0
 unit: 
   unit: 
     investment_method:
       no_limits: 
-        candidate_units: 10000.0
+        investment_count_max_cumulative: 1000.0
 link: 
   connection: 
     investment_method:
       no_limits: 
-        candidate_connections: 10000.0
+        investment_count_max_cumulative: 1000.0
 
