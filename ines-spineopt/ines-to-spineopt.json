@@ -1,0 +1,20 @@
+{
+    "name": "ines-to-spineopt",
+    "tooltype": "python",
+    "includes": [
+        "ines_to_spineopt.py",
+        "ines_to_spineopt_entities.yaml",
+        "ines_to_spineopt_entities_to_parameters.yaml",
+        "ines_to_spineopt_methods.yaml",
+        "ines_to_spineopt_parameters.yaml",
+        "settings.yaml",
+        "spineopt_to_ines.py",
+        "test_ines_to_spineopt.py"
+    ],
+    "description": "INES-Spec to SpineOpt input data converter.",
+    "inputfiles": [],
+    "inputfiles_opt": [],
+    "outputfiles": [],
+    "cmdline_args": [],
+    "includes_main_path": "."
+}

@@ -2,21 +2,49 @@ node:
   node: 
     node_type:
       commodity: 
-        balance_type: balance_type_none
+        balance_type: none
+      balance:
+        balance_type: node_balance
       storage:
-        storage_investment_variable_type: storage_investment_variable_type_continuous
-        has_state: True
+        storage_active: True
     storage_investment_method:
       no_limits: 
-        candidate_storages: 10000000.0
+        storage_investment_count_max_cumulative: 10000000.0
 unit: 
   unit: 
     investment_method:
       no_limits: 
-        candidate_units: 10000000.0
+        investment_count_max_cumulative: 10000000.0
+    startup_method:
+      linear:
+        online_variable_type: linear
+      integer:
+        online_variable_type: integer
+      linear_with_tiers:
+        online_variable_type: linear
+      integer_with_tiers:
+        online_variable_type: integer
 link: 
   connection: 
     investment_method:
       no_limits: 
-        candidate_connections: 10000000.0
+        investment_count_max_cumulative: 10000000.0
+    transfer_method:
+      no_losses_no_cost:
+        connection_type: connection_type_lossless_bidirectional
+      regular_linear:
+        connection_type: connection_type_normal
+      only_cost:
+        connection_type: connection_type_normal
+      one_way:
+        connection_type: connection_type_normal
+constraint:
+  user_constraint:
+    sense:
+      greater_than:
+        constraint_sense: ">="
+      less_than:
+        constraint_sense: "<="
+      equal:
+        constraint_sense: "=="
 

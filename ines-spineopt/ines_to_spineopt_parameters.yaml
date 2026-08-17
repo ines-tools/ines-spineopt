@@ -1,10 +1,33 @@
 node__to_unit:
-  unit__from_node:
-    capacity: [unit_capacity,1.0,[[2],[1]]]
+  node__to_unit:
+    ramp_limit_up: [ramp_limits_up, 1.0, [[1],[2]]]
+    ramp_limit_down: [ramp_limits_down, 1.0, [[1],[2]]]
 unit__to_node:
   unit__to_node:
-    capacity: [unit_capacity, 1.0,[[1],[2]]]
+    capacity: [capacity_per_unit, 1.0,[[1],[2]]]
+    ramp_limit_up: [ramp_limits_up, 1.0, [[1],[2]]]
+    ramp_limit_down: [ramp_limits_down, 1.0, [[1],[2]]]
+    flow_min_cumulative: [flow_limits_min_cumulative, 1.0, [[1],[2]]]
+unit:
+  unit:
+    startup_cost: start_up_cost
+    shutdown_cost: shut_down_cost
+    online_cost: units_on_cost
+    min_uptime: min_up_time
+    min_downtime: min_down_time
+    interest_rate: discount_rate_technology_specific
 node:
   node:
-    storage_capacity: [node_state_cap,1.0,[[1]]]
-    
+    storage_capacity: [storage_state_max,1.0,[[1]]]
+    storage_interest_rate: storage_discount_rate_technology_specific
+    storage_loss_from_stored_energy: storage_self_discharge
+    penalty_upward: balance_penalty
+link:
+  connection:
+    interest_rate: discount_rate_technology_specific
+node__node:
+  node__node:
+    diffusion_coefficient: diffusion_coefficient
+constraint:
+  user_constraint:
+    constant: right_hand_side
