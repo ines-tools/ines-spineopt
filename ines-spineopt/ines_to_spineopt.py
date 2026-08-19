@@ -1621,12 +1621,7 @@ def map_of_periods_or_historical_to_ts(source_db, target_db, settings):
         )[0]["value"]
     )["data"]
     starttime_sp = _ensure_list(starttime_sp_value)
-    resolution = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern",
-            parameter_definition_name="time_resolution",
-        )[0]["value"]
-    )["data"]
+    resolution = _get_time_resolution(source_db)
 
     for source_entity_class in settings:
         for target_entity_class in settings[source_entity_class]:
@@ -1793,6 +1788,42 @@ def _ensure_list(value):
     return [value]
 
 
+def _duration_str_from_hours(hours):
+    """Format a number of hours as a Spine duration string (e.g. '1h', '30m')."""
+    hours = float(hours)
+    if hours.is_integer():
+        return f"{int(hours)}h"
+    minutes = hours * 60
+    if minutes.is_integer():
+        return f"{int(minutes)}m"
+    return f"{hours}h"
+
+
+def _get_time_resolution(source_db, entity_byname=None):
+    """Return the model time resolution as a Spine duration string (e.g. '1h').
+
+    Reads solve_pattern.time_resolution when defined. If it is missing, falls
+    back to the system.timeline parameter, deriving the resolution from the
+    duration of its first timestep.
+    """
+    kwargs = {"entity_byname": entity_byname} if entity_byname is not None else {}
+    items = source_db.get_parameter_value_items(
+        entity_class_name="solve_pattern",
+        parameter_definition_name="time_resolution",
+        **kwargs,
+    )
+    if items:
+        return json.loads(items[0]["value"])["data"]
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="system", parameter_definition_name="timeline"
+    ):
+        value = api.from_database(pv["value"], pv["type"])
+        durations = getattr(value, "values", None)
+        if durations is not None and len(durations) > 0:
+            return _duration_str_from_hours(durations[0])
+    return None
+
+
 def _has_investment_parameters(source_db):
     """Check if the INES source database has any investment parameters defined."""
     investment_params = [
@@ -1845,13 +1876,7 @@ def timeline_setup(source_db, target_db):
             (model_name, sto_structure),
         )
 
-        resolution = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="solve_pattern",
-                parameter_definition_name="time_resolution",
-                entity_byname=sp_byname,
-            )[0]["value"]
-        )["data"]
+        resolution = _get_time_resolution(source_db, sp_byname)
 
         duration_value = json.loads(
             source_db.get_parameter_value_items(
@@ -2104,12 +2129,7 @@ def storage_state_fix_method(source_db, target_db):
         for p in _ensure_list(json.loads(pv["value"])["data"]):
             if p not in all_periods:
                 all_periods.append(p)
-    resolution = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern",
-            parameter_definition_name="time_resolution",
-        )[0]["value"]
-    )["data"]
+    resolution = _get_time_resolution(source_db)
     block_starts = {}
     for period in all_periods:
         py_start = json.loads(
@@ -2459,12 +2479,7 @@ def set_to_entities_and_parameters(source_db, target_db):
         )[0]["value"]
     )["data"]
     model_duration = _ensure_list(model_duration_value)[0]
-    resolution = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern",
-            parameter_definition_name="time_resolution",
-        )[0]["value"]
-    )["data"]
+    resolution = _get_time_resolution(source_db)
 
     for source_parameter in ["max_cumulative", "flow_max_cumulative"]:
         for source_dict_parameter in source_db.get_parameter_value_items(
@@ -2897,12 +2912,7 @@ def unit_flow_variants(source_db, target_db, settings):
                 )[0]["value"]
             )["data"]
             starttime_sp = _ensure_list(starttime_sp_value)
-            resolution = json.loads(
-                source_db.get_parameter_value_items(
-                    entity_class_name="solve_pattern",
-                    parameter_definition_name="time_resolution",
-                )[0]["value"]
-            )["data"]
+            resolution = _get_time_resolution(source_db)
 
             index_names = nested_index_names(param_map["parsed_value"])
             map_table = convert_map_to_table(param_map["parsed_value"])
@@ -3004,12 +3014,7 @@ def flow_profile_method(source_db, target_db):
         )[0]["value"]
     )["data"]
     starttime = _ensure_list(starttime_value)
-    resolution = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern",
-            parameter_definition_name="time_resolution",
-        )[0]["value"]
-    )["data"]
+    resolution = _get_time_resolution(source_db)
 
     for param_map in source_db.get_parameter_value_items(
         entity_class_name="node",
