@@ -188,6 +188,7 @@ def main():
                 )
 
             ## Copy entites
+            print("Copying entities and parameters from INES to SpineOpt...")
             target_db = ines_transform.copy_entities(
                 source_db, target_db, entities_to_copy
             )
@@ -199,7 +200,7 @@ def main():
             target_db = ines_transform.process_methods(
                 source_db, target_db, parameter_methods
             )
-
+            print("Processing capacity")
             # node__to_unit capacity → unit__to_node capacity_per_unit (× max efficiency)
             process_input_capacity(source_db, target_db)
 
@@ -231,82 +232,123 @@ def main():
             ## Copy entities to parameters
             # target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
 
+            # Build shared reference data once
+            periods_info = _get_periods_info(source_db)
+            resolution = _get_time_resolution(source_db)
+            duration_values = source_db.get_parameter_value_items(
+                                entity_class_name="solve_pattern", parameter_definition_name="duration"
+                            )
+            if duration_values:
+                duration_value = json.loads(duration_values[0]["value"])["data"]
+                duration = _ensure_list(duration_value)[0]
+            starttimes = source_db.get_parameter_value_items(
+                                entity_class_name="solve_pattern", parameter_definition_name="start_time"
+                            )
+            if starttimes:
+                starttime_value = json.loads(starttimes[0]["value"])["data"]
+                starttime_sp = _ensure_list(starttime_value)[0]
+
             # Manual functions
             # timeline configuration for spineopt model
+            print("Setting up timeline and scenarios...")
             timeline_setup(source_db, target_db)
 
             ## historical and future time series
+            print("Mapping historical and future time series...")
             map_of_periods_or_historical_to_ts(
-                source_db, target_db, settings["map_of_periods_or_historical_to_ts"]
+                source_db, target_db, settings["map_of_periods_or_historical_to_ts"],
+                periods_info, resolution, duration, starttime_sp,
             )
 
             ## flow profiles addition
-            flow_profile_method(source_db, target_db)
+            print("Mapping flow profiles...")
+            flow_profile_method(source_db, target_db, periods_info, resolution, duration, starttime_sp)
 
             ## availability and profile_limit_upper
-            process_availability(source_db, target_db)
+            print("Mapping availability and profile_limit_upper...")
+            process_availability(source_db, target_db, periods_info)
 
             ## investments not allowed
-            limiting_investments_notallowed(source_db, target_db)
+            print("Mapping investment_uses_integer to investment_variable_type...")
+            limiting_investments_notallowed(source_db, target_db, periods_info)
 
             # Process emissions (CO2, SO2, NOx) - flows, limits, and prices
-            process_emissions(source_db, target_db)
+            print("Mapping emissions...")
+            process_emissions(source_db, target_db, periods_info)
 
             # Fix boundary condition for storages
-            storage_state_fix_method(source_db, target_db)
+            print("Setting storage state methods...")
+            storage_state_fix_method(source_db, target_db, periods_info, resolution)
             storage_state_binding_method(source_db, target_db)
 
             # Set to group constraints
-            set_to_entities_and_parameters(source_db, target_db)
+            print("Mapping set to group constraints...")
+            set_to_entities_and_parameters(source_db, target_db, periods_info, resolution)
 
             # Default parameters
+            print("Mapping default parameters and candidates to number_of...")
             default_parameters(target_db, settings["default_parameters"])
             candidates_to_number_of(target_db)
 
             # existing capacity
+            print("Mapping existing capacity...")
             existing_capacity(source_db, target_db)
 
             # per-period investment limits to cumulative (add existing)
-            process_invest_period(source_db, target_db)
+            print("Processing per-period investment limits to cumulative...")
+            process_invest_period(source_db, target_db, periods_info)
 
             # lifetime to duration
+            print("Mapping lifetime to duration...")
             lifetime_to_duration(source_db, target_db, settings["lifetime_to_duration"])
 
             # unit flow transformation
-            unit_flow_variants(source_db, target_db, settings)
+            print("Mapping unit flow variants...")
+            unit_flow_variants(source_db, target_db, settings,
+                periods_info, resolution, duration, starttime_sp)
 
             # efficiency to unit_flow__unit_flow ratios and operating_points
             process_efficiency(source_db, target_db)
 
             # conversion coefficients to unit_flow__unit_flow ratios
+            print("Mapping conversion coefficients...")
             process_conversion_coefficients(source_db, target_db)
 
             # user constraints from INES constraint coefficients
+            print("Mapping user constraints...")
             process_constraints(source_db, target_db)
 
             # investment_uses_integer to investment_variable_type
+            print("Mapping investment_uses_integer to investment_variable_type...")
             process_investment_integer(source_db, target_db)
 
             # system discount rate
+            print("Mapping system discount rate...")
             process_system_discount_rate(source_db, target_db)
 
             # reserves
+            print("Mapping reserves...")
             process_reserves(source_db, target_db)
 
             # stochastic structure
+            print("Mapping stochastic structure...")
             process_stochastic_structure(source_db, target_db)
 
             # forecast parameters → scenario-indexed Maps
+            print("Mapping forecast parameters to scenario-indexed Maps...")
             process_forecasts(source_db, target_db)
 
             # node penalty defaults
+            print("Mapping node penalty defaults...")
             process_node_penalty(source_db, target_db, settings["node_penalty_default"])
 
             # commodity price to node__to_unit vom_cost
-            process_commodity_price(source_db, target_db)
+            print("Mapping commodity price to node__to_unit vom_cost...")
+            process_commodity_price(source_db, target_db, periods_info)
 
             # bidirectional link capacity and efficiency
-            process_link_bidirectional(source_db, target_db)
+            print("Mapping bidirectional link capacity and efficiency...")
+            process_link_bidirectional(source_db, target_db, periods_info)
 
 
 def process_forecasts(source_db, target_db):
@@ -332,8 +374,14 @@ def process_forecasts(source_db, target_db):
     ]
 
     for src_class, src_param, tgt_class, tgt_param, tgt_order, multiplier in forecast_mappings:
-        # Derive the base parameter name (without _forecasts suffix)
         base_param = src_param.replace("_forecasts", "")
+
+        # Pre-fetch base param values for this class
+        base_by_byname = {}
+        for bp in source_db.get_parameter_value_items(
+            entity_class_name=src_class, parameter_definition_name=base_param,
+        ):
+            base_by_byname[bp["entity_byname"]] = bp
 
         for pv in source_db.get_parameter_value_items(
             entity_class_name=src_class, parameter_definition_name=src_param
@@ -344,25 +392,19 @@ def process_forecasts(source_db, target_db):
             alt = pv["alternative_name"]
             parsed = pv["parsed_value"]
 
-            # Build target entity byname from source byname with reordering
             target_names = tuple(
                 "__".join(pv["entity_byname"][int(i) - 1] for i in k)
                 for k in tgt_order
             )
 
-            # Look up the realization (base) value for the same entity
             indexes = list(parsed.indexes)
             values = [
                 multiplier * v if isinstance(v, (int, float)) else v
                 for v in parsed.values
             ]
-            base_items = source_db.get_parameter_value_items(
-                entity_class_name=src_class,
-                parameter_definition_name=base_param,
-                entity_byname=pv["entity_byname"],
-            )
-            if base_items:
-                base_val = base_items[0]["parsed_value"]
+            base_item = base_by_byname.get(pv["entity_byname"])
+            if base_item:
+                base_val = base_item["parsed_value"]
                 if isinstance(base_val, (int, float)):
                     base_val = multiplier * base_val
                 indexes = ["realization"] + indexes
@@ -409,6 +451,23 @@ def process_stochastic_structure(source_db, target_db):
     sto_structure = "stochastic"
     realization_name = "realization"
 
+    # Pre-fetch set memberships and forecast weights
+    set_nodes = {}
+    for m in source_db.get_entity_items(entity_class_name="set__node"):
+        set_nodes.setdefault(m["entity_byname"][0], []).append(m["entity_byname"][1])
+    set_units = {}
+    for m in source_db.get_entity_items(entity_class_name="set__unit"):
+        set_units.setdefault(m["entity_byname"][0], []).append(m["entity_byname"][1])
+    forecast_weights_all = {}
+    for pv_w in source_db.get_parameter_value_items(
+        entity_class_name="set", parameter_definition_name="stochastic_forecast_weights"
+    ):
+        parsed = pv_w["parsed_value"]
+        if hasattr(parsed, "indexes"):
+            forecast_weights_all[pv_w["entity_byname"][0]] = {
+                str(idx): float(val) for idx, val in zip(parsed.indexes, parsed.values)
+            }
+
     for pv_method in source_db.get_parameter_value_items(
         entity_class_name="set", parameter_definition_name="stochastic_method"
     ):
@@ -420,15 +479,7 @@ def process_stochastic_structure(source_db, target_db):
         alt = pv_method["alternative_name"]
 
         # Get forecast weights: map of {forecast_name: weight}
-        forecast_weights = {}
-        for pv_w in source_db.get_parameter_value_items(
-            entity_class_name="set", parameter_definition_name="stochastic_forecast_weights"
-        ):
-            if pv_w["entity_byname"][0] == set_name:
-                parsed = pv_w["parsed_value"]
-                if hasattr(parsed, "indexes"):
-                    for idx, val in zip(parsed.indexes, parsed.values):
-                        forecast_weights[str(idx)] = float(val)
+        forecast_weights = forecast_weights_all.get(set_name, {})
 
         # Create forecast scenario entities + relationships + weights + parent-child
         for forecast_name, weight in forecast_weights.items():
@@ -462,9 +513,7 @@ def process_stochastic_structure(source_db, target_db):
                 pass
 
         # Link set member nodes → node__stochastic_structure
-        for member in source_db.get_entity_items(entity_class_name="set__node"):
-            if member["entity_byname"][0] == set_name:
-                node_name = member["entity_byname"][1]
+        for node_name in set_nodes.get(set_name, []):
                 try:
                     add_entity(
                         target_db, "node__stochastic_structure",
@@ -474,9 +523,7 @@ def process_stochastic_structure(source_db, target_db):
                     pass
 
         # Link set member units → units_on__stochastic_structure
-        for member in source_db.get_entity_items(entity_class_name="set__unit"):
-            if member["entity_byname"][0] == set_name:
-                unit_name = member["entity_byname"][1]
+        for unit_name in set_units.get(set_name, []):
                 try:
                     add_entity(
                         target_db, "units_on__stochastic_structure",
@@ -495,6 +542,15 @@ def process_stochastic_structure(source_db, target_db):
 
 def process_input_capacity(source_db, target_db):
     """Convert node__to_unit.capacity to unit__to_node.capacity_per_unit × max efficiency."""
+    eff_by_unit = {}
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="unit", parameter_definition_name="efficiency",
+    ):
+        eff_by_unit[pv["entity_byname"][0]] = pv["parsed_value"]
+    utn_by_unit = {}
+    for f in source_db.get_entity_items(entity_class_name="unit__to_node"):
+        utn_by_unit.setdefault(f["entity_byname"][0], []).append(f["entity_byname"][1])
+
     for pv in source_db.get_parameter_value_items(
         entity_class_name="node__to_unit", parameter_definition_name="capacity"
     ):
@@ -503,15 +559,9 @@ def process_input_capacity(source_db, target_db):
         alt = pv["alternative_name"]
         capacity_val = pv["parsed_value"]
 
-        # Get max efficiency of the unit
-        eff_items = source_db.get_parameter_value_items(
-            entity_class_name="unit",
-            entity_byname=(unit_name,),
-            parameter_definition_name="efficiency",
-        )
         max_eff = 1.0
-        if eff_items:
-            eff_val = eff_items[0]["parsed_value"]
+        eff_val = eff_by_unit.get(unit_name)
+        if eff_val is not None:
             if isinstance(eff_val, (int, float)):
                 max_eff = eff_val
             elif isinstance(eff_val, list):
@@ -519,13 +569,7 @@ def process_input_capacity(source_db, target_db):
 
         output_capacity = capacity_val * max_eff
 
-        # Find the output nodes for this unit
-        unit_outputs = [
-            f["entity_byname"][1]
-            for f in source_db.get_entity_items(entity_class_name="unit__to_node")
-            if f["entity_byname"][0] == unit_name
-        ]
-        for out_node in unit_outputs:
+        for out_node in utn_by_unit.get(unit_name, []):
             try:
                 add_parameter_value(
                     target_db, "unit__to_node", "capacity_per_unit",
@@ -549,6 +593,7 @@ def process_reserves(source_db, target_db):
     # For upward/downward: single node with original name
     # For symmetric: two nodes {name}_up and {name}_down
     reserve_nodes = {}  # {ines_reserve_name: [(spineopt_node, direction), ...]}
+    reserve_alt = {}  # {reserve_name: alternative_name}
 
     for pv in source_db.get_parameter_value_items(
         entity_class_name="reserve", parameter_definition_name="reserve_type"
@@ -556,6 +601,7 @@ def process_reserves(source_db, target_db):
         reserve_name = pv["entity_byname"][0]
         alt = pv["alternative_name"]
         rtype = pv["parsed_value"]
+        reserve_alt[reserve_name] = alt
 
         if rtype == "symmetric":
             up_name = reserve_name + "_up"
@@ -568,12 +614,7 @@ def process_reserves(source_db, target_db):
 
     # 1. Create nodes and set reserve flags
     for reserve_name, node_list in reserve_nodes.items():
-        # Get alternative from reserve_type parameter
-        pv = source_db.get_parameter_value_items(
-            entity_class_name="reserve", parameter_definition_name="reserve_type",
-            entity_byname=(reserve_name,),
-        )[0]
-        alt = pv["alternative_name"]
+        alt = reserve_alt.get(reserve_name, "Base")
 
         for node_name, direction in node_list:
             try:
@@ -601,6 +642,30 @@ def process_reserves(source_db, target_db):
                 )
 
     # 3. unit__node__reserve → unit__to_node entities, node groups, and capacity
+    utn_by_unit = {}
+    for f in source_db.get_entity_items(entity_class_name="unit__to_node"):
+        utn_by_unit.setdefault(f["entity_byname"][0], []).append(f["entity_byname"][1])
+    cap_out = {}
+    for item in source_db.get_parameter_value_items(
+        entity_class_name="unit__to_node", parameter_definition_name="capacity",
+    ):
+        cap_out[item["entity_byname"]] = item["parsed_value"]
+    cap_in = {}
+    for item in source_db.get_parameter_value_items(
+        entity_class_name="node__to_unit", parameter_definition_name="capacity",
+    ):
+        cap_in[item["entity_byname"]] = item["parsed_value"]
+    eff_by_unit = {}
+    for item in source_db.get_parameter_value_items(
+        entity_class_name="unit", parameter_definition_name="efficiency",
+    ):
+        eff_by_unit[item["entity_byname"][0]] = item["parsed_value"]
+    mrp_by_byname = {}
+    for item in source_db.get_parameter_value_items(
+        entity_class_name="unit__node__reserve", parameter_definition_name="max_reserve_provision",
+    ):
+        mrp_by_byname[item["entity_byname"]] = item["parsed_value"]
+
     for ent in source_db.get_entity_items(entity_class_name="unit__node__reserve"):
         unit_name = ent["entity_byname"][0]
         energy_node = ent["entity_byname"][1]
@@ -608,61 +673,26 @@ def process_reserves(source_db, target_db):
         if reserve_name not in reserve_nodes:
             continue
 
-        # Look up unit capacity on the energy node
-        capacity_val = None
+        capacity_val = cap_out.get((unit_name, energy_node))
         from_input = False
-        for cap_class in ["unit__to_node", "node__to_unit"]:
-            for cap in source_db.get_parameter_value_items(
-                entity_class_name=cap_class, parameter_definition_name="capacity"
-            ):
-                cap_byname = cap["entity_byname"]
-                if cap_class == "unit__to_node" and cap_byname == (unit_name, energy_node):
-                    capacity_val = cap["parsed_value"]
-                    break
-                elif cap_class == "node__to_unit" and cap_byname == (energy_node, unit_name):
-                    capacity_val = cap["parsed_value"]
-                    from_input = True
-                    break
-            if capacity_val is not None:
-                break
-        # If not found on specific node, sum all output capacities of the unit
         if capacity_val is None:
-            total_cap = 0
-            for cap in source_db.get_parameter_value_items(
-                entity_class_name="unit__to_node", parameter_definition_name="capacity"
-            ):
-                if cap["entity_byname"][0] == unit_name:
-                    total_cap += cap["parsed_value"]
+            capacity_val = cap_in.get((energy_node, unit_name))
+            if capacity_val is not None:
+                from_input = True
+        if capacity_val is None:
+            total_cap = sum(v for k, v in cap_out.items() if k[0] == unit_name)
             if total_cap > 0:
                 capacity_val = total_cap
-        # If capacity came from node__to_unit (input side), multiply by max efficiency
         if from_input and capacity_val is not None:
-            eff_items = source_db.get_parameter_value_items(
-                entity_class_name="unit",
-                entity_byname=(unit_name,),
-                parameter_definition_name="efficiency",
-            )
-            if eff_items:
-                eff_val = eff_items[0]["parsed_value"]
+            eff_val = eff_by_unit.get(unit_name)
+            if eff_val is not None:
                 if isinstance(eff_val, (int, float)):
                     capacity_val = capacity_val * eff_val
                 elif isinstance(eff_val, list):
                     capacity_val = capacity_val * max(eff_val)
 
-        # Look up max_reserve_provision (default 1.0)
-        mrp_items = source_db.get_parameter_value_items(
-            entity_class_name="unit__node__reserve",
-            parameter_definition_name="max_reserve_provision",
-            entity_byname=(unit_name, energy_node, reserve_name),
-        )
-        share = mrp_items[0]["parsed_value"] if mrp_items else 1.0
-
-        # Get alternative
-        alt_items = source_db.get_parameter_value_items(
-            entity_class_name="reserve", parameter_definition_name="reserve_type",
-            entity_byname=(reserve_name,),
-        )
-        alt = alt_items[0]["alternative_name"] if alt_items else "Base"
+        share = mrp_by_byname.get((unit_name, energy_node, reserve_name), 1.0)
+        alt = reserve_alt.get(reserve_name, "Base")
 
         for res_node, _ in reserve_nodes[reserve_name]:
             group_name = unit_name + "_" + res_node + "_group"
@@ -680,11 +710,7 @@ def process_reserves(source_db, target_db):
                 add_entity_group(target_db, "node", group_name, res_node)
             except RuntimeError:
                 pass
-            unit_outputs = [
-                f["entity_byname"][1]
-                for f in source_db.get_entity_items(entity_class_name="unit__to_node")
-                if f["entity_byname"][0] == unit_name
-            ]
+            unit_outputs = utn_by_unit.get(unit_name, [])
             for out_node in unit_outputs:
                 try:
                     add_entity_group(target_db, "node", group_name, out_node)
@@ -846,13 +872,12 @@ def process_investment_integer(source_db, target_db):
         print("commit integer investment variable types error:", e)
 
 
-def process_availability(source_db, target_db):
+def process_availability(source_db, target_db, periods_info):
     """Combine INES unit.availability and profile_limit_upper into SpineOpt unit.availability_factor.
 
     If both unit.availability and profile_limit_upper exist for the same unit,
     the result is their product. profile_limit_upper can come from unit__to_node or node__to_unit.
     """
-    periods_info = _get_periods_info(source_db)
 
     # Collect availability per (unit_name, alternative)
     availability = {}  # {(unit_name, alt): value}
@@ -987,12 +1012,11 @@ def _multiply_values(a, b):
     return {"type": "time_series", "data": merged_data}
 
 
-def process_invest_period(source_db, target_db):
+def process_invest_period(source_db, target_db, periods_info):
     """Transform investment limit params to SpineOpt cumulative params.
 
     Handles both cumulative params (direct copy) and per-period params (add existing capacity).
     """
-    periods_info = _get_periods_info(source_db)
 
     mappings = [
         {
@@ -1078,6 +1102,12 @@ def process_invest_period(source_db, target_db):
                     )
 
         # Period params: add existing capacity to convert to cumulative
+        all_existing = source_db.get_parameter_value_items(
+            entity_class_name=source_class, parameter_definition_name=existing_param,
+        )
+        existing_by_byname = {}
+        for ex in all_existing:
+            existing_by_byname[ex["entity_byname"]] = ex
         for source_param, target_param in mapping["period"]:
             for pv in source_db.get_parameter_value_items(
                 entity_class_name=source_class,
@@ -1086,13 +1116,7 @@ def process_invest_period(source_db, target_db):
                 entity_byname = pv["entity_byname"]
                 alt = pv["alternative_name"]
 
-                # Get initial existing capacity
-                existing_items = source_db.get_parameter_value_items(
-                    entity_class_name=source_class,
-                    entity_byname=entity_byname,
-                    parameter_definition_name=existing_param,
-                )
-                existing_item = existing_items[0] if existing_items else None
+                existing_item = existing_by_byname.get(entity_byname)
                 existing_count = 0.0
                 if existing_item:
                     if existing_item["type"] == "float":
@@ -1139,38 +1163,20 @@ def process_invest_period(source_db, target_db):
 
 
 def _get_periods_info(source_db):
-    """Get period start times and years represented from the source database.
-    Aggregates periods across all solve_pattern entities."""
-    all_periods = []
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="solve_pattern", parameter_definition_name="period"
-    ):
-        periods_value = json.loads(pv["value"])["data"]
-        for p in _ensure_list(periods_value):
-            if p not in all_periods:
-                all_periods.append(p)
+    """Get period start times from the source database."""
+    all_periods = [e["name"] for e in source_db.get_entity_items(entity_class_name="period")]
+    all_start_times = source_db.get_parameter_value_items(
+        entity_class_name="period", parameter_definition_name="start_time",
+    )
     starttime = {}
-    year_repr = {}
-    for period in all_periods:
-        starttime[period] = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="period",
-                entity_byname=(period,),
-                parameter_definition_name="start_time",
-            )[0]["value"]
-        )["data"]
-        year_repr[period] = source_db.get_parameter_value_items(
-            entity_class_name="period",
-            entity_byname=(period,),
-            parameter_definition_name="years_represented",
-        )[0]["parsed_value"]
-    return {"periods": all_periods, "starttime": starttime, "year_repr": year_repr}
+    for pv in all_start_times:
+        starttime[pv["entity_byname"][0]] = json.loads(pv["value"])["data"]
+    return {"periods": all_periods, "starttime": starttime}
 
 
 def _map_to_time_series(parsed_value, periods_info):
     """Convert a period-indexed map parameter to a time series dict. Returns None if no period matches."""
     starttime = periods_info["starttime"]
-    year_repr = periods_info["year_repr"]
     map_table = convert_map_to_table(parsed_value)
     index_names = nested_index_names(parsed_value)
     data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
@@ -1182,13 +1188,6 @@ def _map_to_time_series(parsed_value, periods_info):
     for period_, ts_index_ in starttime.items():
         values_.append(float(data.at[period_, "value"]) if period_ in data.index else 0.0)
         indexes_.append(ts_index_)
-    last_period = list(starttime.keys())[-1]
-    values_.append(values_[-1])
-    indexes_.append(
-        pd.Timestamp(starttime[last_period]).replace(
-            year=int(pd.Timestamp(starttime[last_period]).year + year_repr[last_period])
-        ).isoformat()
-    )
     return {"type": "time_series", "data": dict(zip(indexes_, values_))}
 
 
@@ -1215,13 +1214,13 @@ def _get_emission_rates_for_type(source_db, target_db, config):
                 continue
             content_values[node_name] = (cp["parsed_value"], cp["alternative_name"])
 
+        ntu_entities = set(
+            e["entity_byname"] for e in target_db.get_entity_items(entity_class_name="node__to_unit")
+        )
         for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
             unit_name = unit_entity["name"]
             for node_name, (rate, alt) in content_values.items():
-                if target_db.get_entity_item(
-                    entity_class_name="node__to_unit",
-                    entity_byname=(node_name, unit_name),
-                ):
+                if (node_name, unit_name) in ntu_entities:
                     if unit_name not in rates:
                         rates[unit_name] = []
                     rates[unit_name].append(("node__to_unit", node_name, rate, alt))
@@ -1344,7 +1343,6 @@ def _process_period_emission_limits(target_db, config, param_map, emission_rates
         return
 
     starttime = periods_info["starttime"]
-    year_repr = periods_info["year_repr"]
     map_table = convert_map_to_table(param_map["parsed_value"])
     index_names = nested_index_names(param_map["parsed_value"])
     data = pd.DataFrame(map_table, columns=index_names + ["value"]).set_index(index_names[0])
@@ -1374,13 +1372,6 @@ def _process_period_emission_limits(target_db, config, param_map, emission_rates
             for p_name, p_start in starttime.items():
                 ts_values.append(rate if p_name == period_name else 0.0)
                 ts_indexes.append(p_start)
-            last_p = list(starttime.keys())[-1]
-            ts_values.append(ts_values[-1])
-            ts_indexes.append(
-                pd.Timestamp(starttime[last_p]).replace(
-                    year=int(pd.Timestamp(starttime[last_p]).year + year_repr[last_p])
-                ).isoformat()
-            )
             return {"type": "time_series", "data": dict(zip(ts_indexes, ts_values))}
 
         for unit_name, flows in emission_rates.items():
@@ -1489,7 +1480,7 @@ def _handle_explicit_co2_outputs(target_db):
         )
 
 
-def process_emissions(source_db, target_db):
+def process_emissions(source_db, target_db, periods_info):
     """Process CO2, SO2, and NOx emissions - create emission nodes, emission flows, limits, and prices."""
 
     emission_configs = [
@@ -1521,8 +1512,6 @@ def process_emissions(source_db, target_db):
             "price": "nox_price",
         },
     ]
-
-    periods_info = _get_periods_info(source_db)
 
     for config in emission_configs:
         emission_node = config["node_name"]
@@ -1584,49 +1573,14 @@ def process_emissions(source_db, target_db):
         print("commit emissions error:", e)
 
 
-def map_of_periods_or_historical_to_ts(source_db, target_db, settings):
+def map_of_periods_or_historical_to_ts(source_db, target_db, settings,
+        periods_info, resolution, duration, starttime_sp):
 
-    starttime = {}
-    year_repr = {}
-    all_periods = []
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="solve_pattern", parameter_definition_name="period"
-    ):
-        for period in _ensure_list(json.loads(pv["value"])["data"]):
-            if period not in all_periods:
-                all_periods.append(period)
-    for period in all_periods:
-        starttime[period] = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="period",
-                entity_byname=(period,),
-                parameter_definition_name="start_time",
-            )[0]["value"]
-        )["data"]
-        year_repr[period] = source_db.get_parameter_value_items(
-            entity_class_name="period",
-            entity_byname=(period,),
-            parameter_definition_name="years_represented",
-        )[0]["parsed_value"]
-
-    duration_value = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="duration"
-        )[0]["value"]
-    )["data"]
-    duration = _ensure_list(duration_value)[0]
-    starttime_sp_value = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="start_time"
-        )[0]["value"]
-    )["data"]
-    starttime_sp = _ensure_list(starttime_sp_value)
-    resolution = _get_time_resolution(source_db)
+    starttime = periods_info["starttime"]
 
     for source_entity_class in settings:
         for target_entity_class in settings[source_entity_class]:
             for source_param in settings[source_entity_class][target_entity_class]:
-                print(source_entity_class, target_entity_class, source_param)
                 param_elements = settings[source_entity_class][target_entity_class][
                     source_param
                 ]
@@ -1668,17 +1622,6 @@ def map_of_periods_or_historical_to_ts(source_db, target_db, settings):
 
                                 # this should be removed once the fixed resolution is repaired
                                 indexes_.append(ts_index_)
-                            values_.append(values_[-1])
-                            indexes_.append(
-                                (
-                                    pd.Timestamp(ts_index_).replace(
-                                        year=int(
-                                            pd.Timestamp(ts_index_).year
-                                            + year_repr[period_]
-                                        )
-                                    )
-                                ).isoformat()
-                            )
 
                             ts_to_export = {
                                 "type": "time_series",
@@ -1862,10 +1805,18 @@ def timeline_setup(source_db, target_db):
     # Check if investment parameters exist in source DB
     has_investments = _has_investment_parameters(source_db)
 
+    # Fetch all solve_pattern params once
+    sp_params = {}
+    for pv in source_db.get_parameter_value_items(entity_class_name="solve_pattern"):
+        sp_params.setdefault(pv["entity_byname"][0], {}).setdefault(
+            pv["parameter_definition_name"], []
+        ).append(pv)
+
     # Loop over all solve_pattern entities — each becomes a model
     for sp_entity in source_db.get_entity_items(entity_class_name="solve_pattern"):
         model_name = sp_entity["name"]
         sp_byname = (model_name,)
+        sp_p = sp_params.get(model_name, {})
 
         add_entity(
             target_db, "model__default_stochastic_structure", (model_name, sto_structure)
@@ -1876,35 +1827,19 @@ def timeline_setup(source_db, target_db):
             (model_name, sto_structure),
         )
 
-        resolution = _get_time_resolution(source_db, sp_byname)
+        res_items = sp_p.get("time_resolution", [])
+        resolution = json.loads(res_items[0]["value"])["data"] if res_items else _get_time_resolution(source_db, sp_byname)
 
-        duration_value = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="solve_pattern", parameter_definition_name="duration",
-                entity_byname=sp_byname,
-            )[0]["value"]
-        )["data"]
+        duration_value = json.loads(sp_p["duration"][0]["value"])["data"]
         durations = _ensure_list(duration_value)
 
-        start_time_value = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="solve_pattern", parameter_definition_name="start_time",
-                entity_byname=sp_byname,
-            )[0]["value"]
-        )["data"]
+        start_time_value = json.loads(sp_p["start_time"][0]["value"])["data"]
         start_times = _ensure_list(start_time_value)
 
-        # rolling optimization parameters (optional)
-        rolling_jump_items = source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="rolling_jump",
-            entity_byname=sp_byname,
-        )
-        rolling_jump = json.loads(rolling_jump_items[0]["value"])["data"] if rolling_jump_items else None
-        rolling_horizon_items = source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="rolling_horizon",
-            entity_byname=sp_byname,
-        )
-        rolling_horizon = json.loads(rolling_horizon_items[0]["value"])["data"] if rolling_horizon_items else None
+        rj_items = sp_p.get("rolling_jump", [])
+        rolling_jump = json.loads(rj_items[0]["value"])["data"] if rj_items else None
+        rh_items = sp_p.get("rolling_horizon", [])
+        rolling_horizon = json.loads(rh_items[0]["value"])["data"] if rh_items else None
 
         def get_duration(idx):
             if len(durations) > idx:
@@ -2027,6 +1962,20 @@ def _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_in
             tb_name = ent["entity_byname"][1]
             investment_blocks.append(tb_name)
 
+    # Pre-fetch temporal block params and set memberships
+    tb_params = {}
+    for pv in target_db.get_parameter_value_items(entity_class_name="temporal_block"):
+        tb_params.setdefault(pv["entity_byname"][0], {})[pv["parameter_definition_name"]] = pv["parsed_value"]
+    set_nodes = {}
+    for m in source_db.get_entity_items(entity_class_name="set__node"):
+        set_nodes.setdefault(m["entity_byname"][0], []).append(m["entity_byname"][1])
+    set_units = {}
+    for m in source_db.get_entity_items(entity_class_name="set__unit"):
+        set_units.setdefault(m["entity_byname"][0], []).append(m["entity_byname"][1])
+    set_links = {}
+    for m in source_db.get_entity_items(entity_class_name="set__link"):
+        set_links.setdefault(m["entity_byname"][0], []).append(m["entity_byname"][1])
+
     for pv in source_db.get_parameter_value_items(
         entity_class_name="set", parameter_definition_name="time_resolution"
     ):
@@ -2040,18 +1989,13 @@ def _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_in
             set_tb_names.append(set_tb_name)
             add_entity(target_db, "temporal_block", (set_tb_name,))
             # Copy block_start and block_end from original, override resolution
+            orig_params = tb_params.get(orig_tb, {})
             for param_name in ["block_start", "block_end"]:
-                orig_param = target_db.get_parameter_value_item(
-                    entity_class_name="temporal_block",
-                    entity_byname=(orig_tb,),
-                    parameter_definition_name=param_name,
-                    alternative_name=default_alt,
-                )
-                if orig_param:
+                if param_name in orig_params:
                     add_parameter_value(
                         target_db, "temporal_block", param_name,
                         default_alt, (set_tb_name,),
-                        orig_param["parsed_value"],
+                        orig_params[param_name],
                     )
             add_parameter_value(
                 target_db, "temporal_block", "resolution",
@@ -2065,24 +2009,16 @@ def _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_in
             set_inv_tb_name = f"{set_name}_{orig_tb}"
             set_inv_tb_names.append(set_inv_tb_name)
             add_entity(target_db, "temporal_block", (set_inv_tb_name,))
-            # Copy resolution from original investment block (duration-based)
-            orig_res = target_db.get_parameter_value_item(
-                entity_class_name="temporal_block",
-                entity_byname=(orig_tb,),
-                parameter_definition_name="resolution",
-                alternative_name=default_alt,
-            )
-            if orig_res:
+            orig_params = tb_params.get(orig_tb, {})
+            if "resolution" in orig_params:
                 add_parameter_value(
                     target_db, "temporal_block", "resolution",
                     default_alt, (set_inv_tb_name,),
-                    orig_res["parsed_value"],
+                    orig_params["resolution"],
                 )
 
         # Link set member nodes
-        for member in source_db.get_entity_items(entity_class_name="set__node"):
-            if member["entity_byname"][0] == set_name:
-                node_name = member["entity_byname"][1]
+        for node_name in set_nodes.get(set_name, []):
                 for tb in set_tb_names:
                     try:
                         add_entity(target_db, "node__temporal_block", (node_name, tb))
@@ -2095,9 +2031,7 @@ def _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_in
                         pass
 
         # Link set member units
-        for member in source_db.get_entity_items(entity_class_name="set__unit"):
-            if member["entity_byname"][0] == set_name:
-                unit_name = member["entity_byname"][1]
+        for unit_name in set_units.get(set_name, []):
                 for tb in set_tb_names:
                     try:
                         add_entity(target_db, "units_on__temporal_block", (unit_name, tb))
@@ -2110,9 +2044,7 @@ def _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_in
                         pass
 
         # Link set member links (INES link → SpineOpt connection)
-        for member in source_db.get_entity_items(entity_class_name="set__link"):
-            if member["entity_byname"][0] == set_name:
-                link_name = member["entity_byname"][1]
+        for link_name in set_links.get(set_name, []):
                 for tb in set_inv_tb_names:
                     try:
                         add_entity(target_db, "connection__investment_temporal_block", (link_name, tb))
@@ -2120,52 +2052,38 @@ def _process_set_based_temporal_blocks(source_db, target_db, default_alt, has_in
                         pass
 
 
-def storage_state_fix_method(source_db, target_db):
+def storage_state_fix_method(source_db, target_db, periods_info, resolution):
 
-    all_periods = []
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="solve_pattern", parameter_definition_name="period"
-    ):
-        for p in _ensure_list(json.loads(pv["value"])["data"]):
-            if p not in all_periods:
-                all_periods.append(p)
-    resolution = _get_time_resolution(source_db)
     block_starts = {}
-    for period in all_periods:
-        py_start = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="period",
-                parameter_definition_name="start_time",
-                entity_byname=(period,),
-            )[0]["value"]
-        )["data"]
+    for period, st in periods_info["starttime"].items():
         block_starts[period] = (
-            (pd.Timestamp(py_start) + pd.Timedelta(days=366)).isoformat()
-            if bool(pd.Timestamp(py_start).year % 4 == 0)
-            else py_start
+            (pd.Timestamp(st) + pd.Timedelta(days=366)).isoformat()
+            if bool(pd.Timestamp(st).year % 4 == 0)
+            else st
         )
+    # Fetch lookup tables once
+    all_capacities = source_db.get_parameter_value_items(parameter_definition_name="storage_capacity")
+    cap_by_byname = {}
+    for c in all_capacities:
+        cap_by_byname.setdefault(c["entity_byname"], []).append(c)
+    all_fixes = source_db.get_parameter_value_items(parameter_definition_name="storage_state_fix")
+    fix_by_byname = {}
+    for f in all_fixes:
+        fix_by_byname.setdefault(f["entity_byname"], []).append(f)
+    all_existing = source_db.get_parameter_value_items(parameter_definition_name="storages_existing")
+    existing_by_byname = {}
+    for e in all_existing:
+        existing_by_byname[e["entity_byname"]] = e
+
     for storage_method in source_db.get_parameter_value_items(
         parameter_definition_name="storage_state_fix_method"
     ):
-        capacities_ = source_db.get_parameter_value_items(
-            entity_class_name=storage_method["entity_class_name"],
-            entity_byname=storage_method["entity_byname"],
-            parameter_definition_name="storage_capacity",
-        )
+        capacities_ = cap_by_byname.get(storage_method["entity_byname"], [])
         if capacities_:
             if storage_method["parsed_value"] == "fix_start":
-                values_ = source_db.get_parameter_value_items(
-                    entity_class_name=storage_method["entity_class_name"],
-                    entity_byname=storage_method["entity_byname"],
-                    parameter_definition_name="storage_state_fix",
-                )
+                values_ = fix_by_byname.get(storage_method["entity_byname"], [])
                 if values_:
-                    existing_items = source_db.get_parameter_value_items(
-                        entity_class_name=storage_method["entity_class_name"],
-                        entity_byname=storage_method["entity_byname"],
-                        parameter_definition_name="storages_existing",
-                    )
-                    existing_ = existing_items[0] if existing_items else None
+                    existing_ = existing_by_byname.get(storage_method["entity_byname"])
                     if not existing_:
                         multiplier = 1.0
                     else:
@@ -2286,7 +2204,7 @@ def storage_state_binding_method(source_db, target_db):
         print("commit storage state binding method error:", e)
 
 
-def limiting_investments_notallowed(source_db, target_db):
+def limiting_investments_notallowed(source_db, target_db, periods_info):
 
     retirement_method = {
         "unit": "retirement_method",
@@ -2314,29 +2232,20 @@ def limiting_investments_notallowed(source_db, target_db):
         "link": "investment_count_fix_cumulative",
         "node": "storage_investment_count_fix_cumulative",
     }
-    starttime = {}
-    year_repr = {}
+    starttime = periods_info["starttime"]
 
-    all_periods = []
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="solve_pattern", parameter_definition_name="period"
-    ):
-        for p in _ensure_list(json.loads(pv["value"])["data"]):
-            if p not in all_periods:
-                all_periods.append(p)
-    for period in all_periods:
-        starttime[period] = json.loads(
-            source_db.get_parameter_value_items(
-                entity_class_name="period",
-                entity_byname=(period,),
-                parameter_definition_name="start_time",
-            )[0]["value"]
-        )["data"]
-        year_repr[period] = source_db.get_parameter_value_items(
-            entity_class_name="period",
-            entity_byname=(period,),
-            parameter_definition_name="years_represented",
-        )[0]["parsed_value"]
+    # Fetch lookup tables once
+    all_existing = {}
+    all_retirement = {}
+    for cls in ["unit", "link", "node"]:
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name=cls, parameter_definition_name=target_candi[cls],
+        ):
+            all_existing[(cls, pv["entity_byname"], pv["alternative_name"])] = pv
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name=cls, parameter_definition_name=retirement_method[cls],
+        ):
+            all_retirement.setdefault((cls, pv["entity_byname"]), []).append(pv)
 
     for source_param in ["investment_method", "storage_investment_method"]:
         for param_map in [
@@ -2346,11 +2255,8 @@ def limiting_investments_notallowed(source_db, target_db):
             )
             if i["parsed_value"] == "not_allowed"
         ]:
-            existing_ = source_db.get_parameter_value_item(
-                entity_class_name=param_map["entity_class_name"],
-                parameter_definition_name=target_candi[param_map["entity_class_name"]],
-                entity_byname=param_map["entity_byname"],
-                alternative_name=param_map["alternative_name"],
+            existing_ = all_existing.get(
+                (param_map["entity_class_name"], param_map["entity_byname"], param_map["alternative_name"])
             )
             if existing_:
                 if existing_["type"] == "map":
@@ -2370,18 +2276,6 @@ def limiting_investments_notallowed(source_db, target_db):
                                 values_.append(float(data.at[period_, "value"]))
                                 # this should be removed once the fixed resolution is repaired
                                 indexes_.append(ts_index_)
-
-                        values_.append(values_[-1])
-                        indexes_.append(
-                            (
-                                pd.Timestamp(ts_index_).replace(
-                                    year=int(
-                                        pd.Timestamp(ts_index_).year
-                                        + year_repr[period_]
-                                    )
-                                )
-                            ).isoformat()
-                        )
 
                         if len(data) > 1:
                             value_ = {
@@ -2408,12 +2302,8 @@ def limiting_investments_notallowed(source_db, target_db):
                             0.0,
                         )
 
-                        retirement_method_items = source_db.get_parameter_value_items(
-                            entity_class_name=param_map["entity_class_name"],
-                            parameter_definition_name=retirement_method[
-                                param_map["entity_class_name"]
-                            ],
-                            entity_byname=param_map["entity_byname"],
+                        retirement_method_items = all_retirement.get(
+                            (param_map["entity_class_name"], param_map["entity_byname"]), []
                         )
                         retirement_method_value = retirement_method_items[0] if retirement_method_items else None
                         if retirement_method_value:
@@ -2437,12 +2327,8 @@ def limiting_investments_notallowed(source_db, target_db):
                         existing_["entity_byname"],
                         value_,
                     )
-                    retirement_method_items = source_db.get_parameter_value_items(
-                        entity_class_name=param_map["entity_class_name"],
-                        parameter_definition_name=retirement_method[
-                            param_map["entity_class_name"]
-                        ],
-                        entity_byname=param_map["entity_byname"],
+                    retirement_method_items = all_retirement.get(
+                        (param_map["entity_class_name"], param_map["entity_byname"]), []
                     )
                     retirement_method_value = retirement_method_items[0] if retirement_method_items else None
                     if retirement_method_value and retirement_method_value["parsed_value"] == "not_retired":
@@ -2471,7 +2357,7 @@ def limiting_investments_notallowed(source_db, target_db):
         print("commit candadite assets error:", e)
 
 
-def set_to_entities_and_parameters(source_db, target_db):
+def set_to_entities_and_parameters(source_db, target_db, periods_info, resolution):
 
     model_duration_value = json.loads(
         source_db.get_parameter_value_items(
@@ -2479,28 +2365,28 @@ def set_to_entities_and_parameters(source_db, target_db):
         )[0]["value"]
     )["data"]
     model_duration = _ensure_list(model_duration_value)[0]
-    resolution = _get_time_resolution(source_db)
+
+    # Fetch set membership tables once
+    set_members = {}
+    for relation in ["set__unit_flow", "set__node", "set__unit", "set__link"]:
+        by_set = {}
+        for element in source_db.get_entity_items(entity_class_name=relation):
+            by_set.setdefault(element["entity_byname"][0], []).append(element["entity_byname"])
+        set_members[relation] = by_set
+    # Fetch entity class for all entities (for flow_class lookup)
+    all_entities_by_byname = {}
+    for e in source_db.get_entity_items():
+        all_entities_by_byname[e["entity_byname"]] = e["entity_class_name"]
 
     for source_parameter in ["max_cumulative", "flow_max_cumulative"]:
         for source_dict_parameter in source_db.get_parameter_value_items(
             entity_class_name="set", parameter_definition_name=source_parameter
         ):
+            set_name = source_dict_parameter["entity_byname"][0]
             source_relationships = {
-                relation: []
-                for relation in [
-                    "set__unit_flow",
-                    "set__node",
-                    "set__unit",
-                    "set__link",
-                ]
+                relation: set_members[relation].get(set_name, [])
+                for relation in ["set__unit_flow", "set__node", "set__unit", "set__link"]
             }
-            for relation in source_relationships:
-                for element in source_db.get_entity_items(entity_class_name=relation):
-                    if (
-                        element["entity_byname"][0]
-                        == source_dict_parameter["entity_byname"][0]
-                    ):
-                        source_relationships[relation].append(element["entity_byname"])
             if source_parameter == "max_cumulative":
                 try:
                     add_entity(
@@ -2547,9 +2433,7 @@ def set_to_entities_and_parameters(source_db, target_db):
                 if len(source_relationships) == 1:
                     for entity_relation, names_relation in source_relationships.items():
                         if entity_relation == "set__unit_flow":
-                            source_flow = source_db.get_entity_items(
-                                entity_byname=names_relation[1:]
-                            )[0]["entity_class_name"]
+                            source_flow = all_entities_by_byname.get(tuple(names_relation[1:]))
                             target_entity_class = (
                                 "node__to_unit"
                                 if source_flow == "node__to_unit"
@@ -2588,7 +2472,6 @@ def set_to_entities_and_parameters(source_db, target_db):
                     pass
 
     # invest_max_total and invest_max_period → investment_capacity_total_max_cumulative
-    periods_info = _get_periods_info(source_db)
     for source_parameter in ["invest_max_total", "invest_max_period"]:
         for pv in source_db.get_parameter_value_items(
             entity_class_name="set", parameter_definition_name=source_parameter
@@ -2606,12 +2489,11 @@ def set_to_entities_and_parameters(source_db, target_db):
                 ("set__node", "node__investment_group"),
                 ("set__link", "connection__investment_group"),
             ]:
-                for elem in source_db.get_entity_items(entity_class_name=relation):
-                    if elem["entity_byname"][0] == set_name:
-                        try:
-                            add_entity(target_db, target_rel, (elem["entity_byname"][1], set_name))
-                        except RuntimeError:
-                            pass
+                for elem_byname in set_members[relation].get(set_name, []):
+                    try:
+                        add_entity(target_db, target_rel, (elem_byname[1], set_name))
+                    except RuntimeError:
+                        pass
 
             if pv["type"] == "float":
                 value_to_set = pv["parsed_value"]
@@ -2671,13 +2553,9 @@ def set_to_entities_and_parameters(source_db, target_db):
                 pass
 
             # Add set__unit_flow members as unit_flow__user_constraint
-            for member in source_db.get_entity_items(entity_class_name="set__unit_flow"):
-                if member["entity_byname"][0] != set_name:
-                    continue
-                flow_byname = member["entity_byname"][1:]
-                flow_class = source_db.get_entity_items(
-                    entity_byname=flow_byname
-                )[0]["entity_class_name"]
+            for member_byname in set_members["set__unit_flow"].get(set_name, []):
+                flow_byname = member_byname[1:]
+                flow_class = all_entities_by_byname.get(tuple(flow_byname))
                 if flow_class == "node__to_unit":
                     uf_uc_byname = (flow_byname[0], flow_byname[1], set_name)
                 else:
@@ -2825,7 +2703,6 @@ def lifetime_to_duration(source_db, target_db, settings):
                     for target_param in settings[source_class][target_class][
                         source_param
                     ]:
-                        print(target_param, param_map["entity_byname"])
                         add_parameter_value(
                             target_db,
                             target_class,
@@ -2843,7 +2720,8 @@ def lifetime_to_duration(source_db, target_db, settings):
         print("commit lifetime conversion error:", e)
 
 
-def unit_flow_variants(source_db, target_db, settings):
+def unit_flow_variants(source_db, target_db, settings,
+        periods_info, resolution, duration, starttime_sp):
 
     parameters_mapping = {
         "equality_ratio": "flow_ratio_equality_coefficient",
@@ -2874,45 +2752,7 @@ def unit_flow_variants(source_db, target_db, settings):
 
         elif param_map["type"] == "map":
 
-            starttime = {}
-            year_repr = {}
-            all_periods = []
-            for pv_sp in source_db.get_parameter_value_items(
-                entity_class_name="solve_pattern",
-                parameter_definition_name="period",
-            ):
-                for p in _ensure_list(json.loads(pv_sp["value"])["data"]):
-                    if p not in all_periods:
-                        all_periods.append(p)
-            for period in all_periods:
-                starttime[period] = json.loads(
-                    source_db.get_parameter_value_items(
-                        entity_class_name="period",
-                        entity_byname=(period,),
-                        parameter_definition_name="start_time",
-                    )[0]["value"]
-                )["data"]
-                year_repr[period] = source_db.get_parameter_value_items(
-                    entity_class_name="period",
-                    entity_byname=(period,),
-                    parameter_definition_name="years_represented",
-                )[0]["parsed_value"]
-
-            duration_value = json.loads(
-                source_db.get_parameter_value_items(
-                    entity_class_name="solve_pattern",
-                    parameter_definition_name="duration",
-                )[0]["value"]
-            )["data"]
-            duration = _ensure_list(duration_value)[0]
-            starttime_sp_value = json.loads(
-                source_db.get_parameter_value_items(
-                    entity_class_name="solve_pattern",
-                    parameter_definition_name="start_time",
-                )[0]["value"]
-            )["data"]
-            starttime_sp = _ensure_list(starttime_sp_value)
-            resolution = _get_time_resolution(source_db)
+            starttime = periods_info["starttime"]
 
             index_names = nested_index_names(param_map["parsed_value"])
             map_table = convert_map_to_table(param_map["parsed_value"])
@@ -2936,14 +2776,6 @@ def unit_flow_variants(source_db, target_db, settings):
 
                     # this should be removed once the fixed resolution is repaired
                     indexes_.append(ts_index_)
-                values_.append(values_[-1])
-                indexes_.append(
-                    (
-                        pd.Timestamp(ts_index_).replace(
-                            year=int(pd.Timestamp(ts_index_).year + year_repr[period_])
-                        )
-                    ).isoformat()
-                )
                 ts_export = {
                     "type": "time_series",
                     "data": dict(zip(indexes_, values_)),
@@ -3000,45 +2832,42 @@ def unit_flow_variants(source_db, target_db, settings):
         print("commit unit flows error:", e)
 
 
-def flow_profile_method(source_db, target_db):
+def flow_profile_method(source_db, target_db, periods_info, resolution, duration, starttime_sp):
 
-    duration_value = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="duration"
-        )[0]["value"]
-    )["data"]
-    duration = _ensure_list(duration_value)[0]
-    starttime_value = json.loads(
-        source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="start_time"
-        )[0]["value"]
-    )["data"]
-    starttime = _ensure_list(starttime_value)
-    resolution = _get_time_resolution(source_db)
+    starttime = starttime_sp
+
+    # Fetch lookup tables once
+    scaling_methods = {}
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="flow_scaling_method",
+    ):
+        scaling_methods[pv["entity_byname"][0]] = pv
+    flow_annuals = {}
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="flow_annual",
+    ):
+        flow_annuals[pv["entity_byname"][0]] = pv
+    flow_profiles = {}
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="flow_profile",
+    ):
+        flow_profiles[pv["entity_byname"][0]] = pv
 
     for param_map in source_db.get_parameter_value_items(
         entity_class_name="node",
         parameter_definition_name="flow_profile",
     ):
         alt = param_map["alternative_name"]
+        node_name = param_map["entity_byname"][0]
 
-        flow_method_items = source_db.get_parameter_value_items(
-            entity_class_name="node",
-            entity_byname=param_map["entity_byname"],
-            parameter_definition_name="flow_scaling_method",
-        )
-        flow_method = flow_method_items[0] if flow_method_items else None
+        flow_method = scaling_methods.get(node_name)
 
         flow_annual_items = None
         if flow_method and flow_method["parsed_value"] == "scale_to_annual":
             target_name = param_map["entity_name"]
 
-            # Get flow_annual for scaling
-            flow_annual_items = source_db.get_parameter_value_items(
-                entity_class_name="node",
-                entity_byname=param_map["entity_byname"],
-                parameter_definition_name="flow_annual",
-            )
+            fa = flow_annuals.get(node_name)
+            flow_annual_items = [fa] if fa else None
 
             definition_condition = True
         elif flow_method and flow_method["parsed_value"] == "use_profile_directly":
@@ -3079,8 +2908,6 @@ def flow_profile_method(source_db, target_db):
                             flow_annual_val = flow_annual_items[0]["parsed_value"]
                             # flow_annual can be a map (period-indexed) or float
                             if hasattr(flow_annual_val, 'indexes'):
-                                # Map: find matching period value
-                                periods_info = _get_periods_info(source_db)
                                 annual_value = None
                                 for p_idx, p_name in enumerate(periods_info["periods"]):
                                     if periods_info["starttime"][p_name] == element:
@@ -3191,21 +3018,13 @@ def flow_profile_method(source_db, target_db):
         parsed = param_map["parsed_value"]
 
         # Get flow_scaling_method and flow_annual for this node
-        flow_method_items = source_db.get_parameter_value_items(
-            entity_class_name="node",
-            entity_byname=(node_name,),
-            parameter_definition_name="flow_scaling_method",
-        )
-        flow_method = flow_method_items[0] if flow_method_items else None
+        flow_method = scaling_methods.get(node_name)
         flow_annual_items = None
         annual_value = None
         if flow_method and flow_method["parsed_value"] == "scale_to_annual":
-            flow_annual_items = source_db.get_parameter_value_items(
-                entity_class_name="node",
-                entity_byname=(node_name,),
-                parameter_definition_name="flow_annual",
-            )
-            if flow_annual_items:
+            fa = flow_annuals.get(node_name)
+            if fa:
+                flow_annual_items = [fa]
                 fav = flow_annual_items[0]["parsed_value"]
                 annual_value = float(fav) if isinstance(fav, (int, float)) else float(fav.values[0])
 
@@ -3229,13 +3048,9 @@ def flow_profile_method(source_db, target_db):
         values = [_process_profile_value(v) for v in parsed.values]
 
         # Prepend realization from base flow_profile
-        base_items = source_db.get_parameter_value_items(
-            entity_class_name="node",
-            parameter_definition_name="flow_profile",
-            entity_byname=(node_name,),
-        )
-        if base_items:
-            base_val = base_items[0]["parsed_value"]
+        base_pv = flow_profiles.get(node_name)
+        if base_pv:
+            base_val = base_pv["parsed_value"]
             realization_demand = _process_profile_value(base_val)
             indexes = ["realization"] + indexes
             values = [realization_demand] + values
@@ -3273,43 +3088,45 @@ def flow_profile_method(source_db, target_db):
 def process_efficiency(source_db, target_db):
     """Transform INES unit.efficiency and unit.conversion_method to SpineOpt flow ratios and operating_points."""
 
+    # Fetch lookup tables once
+    all_conversion_methods = source_db.get_parameter_value_items(
+        entity_class_name="unit", parameter_definition_name="conversion_method",
+    )
+    cc_out_items = source_db.get_parameter_value_items(
+        entity_class_name="unit__to_node", parameter_definition_name="conversion_coefficient",
+    )
+    cc_in_items = source_db.get_parameter_value_items(
+        entity_class_name="node__to_unit", parameter_definition_name="conversion_coefficient",
+    )
+    cc_out = {item["entity_byname"]: item["parsed_value"] for item in cc_out_items}
+    cc_in = {item["entity_byname"]: item["parsed_value"] for item in cc_in_items}
+    cm_by_alt = {}
+    cm_fallback = {}
+    for cm in all_conversion_methods:
+        unit = cm["entity_byname"][0]
+        cm_by_alt[(unit, cm["alternative_name"])] = cm["parsed_value"]
+        cm_fallback[unit] = cm["parsed_value"]
+    outputs_by_unit = {}
+    for f in source_db.get_entity_items(entity_class_name="unit__to_node"):
+        outputs_by_unit.setdefault(f["entity_byname"][0], set()).add(f["entity_byname"][1])
+    inputs_by_unit = {}
+    for f in source_db.get_entity_items(entity_class_name="node__to_unit"):
+        inputs_by_unit.setdefault(f["entity_byname"][1], set()).add(f["entity_byname"][0])
+
     for eff_param in source_db.get_parameter_value_items(
         entity_class_name="unit", parameter_definition_name="efficiency"
     ):
         unit_name = eff_param["entity_byname"][0]
         alt = eff_param["alternative_name"]
 
-        # Get conversion method
-        method_item = source_db.get_parameter_value_item(
-            entity_class_name="unit",
-            entity_byname=(unit_name,),
-            parameter_definition_name="conversion_method",
-            alternative_name=alt,
-        )
-        if not method_item:
-            method_items = source_db.get_parameter_value_items(
-                entity_class_name="unit",
-                entity_byname=(unit_name,),
-                parameter_definition_name="conversion_method",
-            )
-            method_item = method_items[0] if method_items else None
-        conversion_method = method_item["parsed_value"] if method_item else "constant_efficiency"
+        conversion_method = cm_by_alt.get((unit_name, alt), cm_fallback.get(unit_name, "constant_efficiency"))
 
         # Skip methods that use conversion_coefficient or unit_flow__unit_flow directly
         if conversion_method in ("coefficients_only", "piecewise_linear_for_each_flow"):
             continue
 
-        # Get output and input nodes from SOURCE db to avoid emission nodes
-        unit_outputs = [
-            f["entity_byname"][1]
-            for f in source_db.get_entity_items(entity_class_name="unit__to_node")
-            if f["entity_byname"][0] == unit_name
-        ]
-        unit_inputs = [
-            f["entity_byname"][0]
-            for f in source_db.get_entity_items(entity_class_name="node__to_unit")
-            if f["entity_byname"][1] == unit_name
-        ]
+        unit_outputs = list(outputs_by_unit.get(unit_name, []))
+        unit_inputs = list(inputs_by_unit.get(unit_name, []))
 
         if not unit_inputs or not unit_outputs:
             continue
@@ -3318,11 +3135,11 @@ def process_efficiency(source_db, target_db):
 
         if conversion_method == "constant_efficiency":
             _process_constant_efficiency(
-                source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
+                target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt, cc_out, cc_in
             )
         elif conversion_method in ("partial_load_efficiency", "piecewise_linear", "piecewise_SOS2"):
             _process_piecewise_efficiency(
-                source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt
+                target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt, cc_out, cc_in
             )
 
     try:
@@ -3333,7 +3150,7 @@ def process_efficiency(source_db, target_db):
         print("commit efficiency conversions error:", e)
 
 
-def _process_constant_efficiency(source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
+def _process_constant_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt, cc_out, cc_in):
     """Handle constant_efficiency.
 
     Single input + single output: set flow_ratio_equality_coefficient = efficiency.
@@ -3389,34 +3206,23 @@ def _process_constant_efficiency(source_db, target_db, unit_name, efficiency, un
 
         # Output flows: coefficient = conversion_coefficient (or 1.0)
         for out_node in unit_outputs:
-            out_coeff = 1.0
-            for cc_item in source_db.get_parameter_value_items(
-                entity_class_name="unit__to_node",
-                parameter_definition_name="conversion_coefficient",
-            ):
-                if cc_item["entity_byname"] == (unit_name, out_node):
-                    out_coeff = cc_item["parsed_value"]
-                    break
+            out_coeff = cc_out.get((unit_name, out_node), 1.0)
             uf_uc_byname = (unit_name, out_node, constraint_name)
             try:
                 add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
             except RuntimeError:
                 pass
-            add_parameter_value(
-                target_db, "unit_flow__user_constraint",
-                "coefficient_for_unit_flow", alt, uf_uc_byname, out_coeff,
-            )
+            try:
+                add_parameter_value(
+                    target_db, "unit_flow__user_constraint",
+                    "coefficient_for_unit_flow", alt, uf_uc_byname, out_coeff,
+                )
+            except RuntimeError:
+                pass
 
         # Input flows: coefficient = -1 * conversion_coefficient * efficiency
         for in_node in unit_inputs:
-            in_coeff = 1.0
-            for cc_item in source_db.get_parameter_value_items(
-                entity_class_name="node__to_unit",
-                parameter_definition_name="conversion_coefficient",
-            ):
-                if cc_item["entity_byname"] == (in_node, unit_name):
-                    in_coeff = cc_item["parsed_value"]
-                    break
+            in_coeff = cc_in.get((in_node, unit_name), 1.0)
             if isinstance(efficiency, Map):
                 # Create a Map with same indexes, values = -1 * in_coeff * eff_value
                 coeff_values = [-1.0 * in_coeff * float(v) for v in efficiency.values]
@@ -3433,13 +3239,16 @@ def _process_constant_efficiency(source_db, target_db, unit_name, efficiency, un
                 add_entity(target_db, "unit_flow__user_constraint", uf_uc_byname)
             except RuntimeError:
                 pass
-            add_parameter_value(
-                target_db, "unit_flow__user_constraint",
-                "coefficient_for_unit_flow", alt, uf_uc_byname, input_coefficient,
-            )
+            try:
+                add_parameter_value(
+                    target_db, "unit_flow__user_constraint",
+                    "coefficient_for_unit_flow", alt, uf_uc_byname, input_coefficient,
+                )
+            except RuntimeError:
+                pass
 
 
-def _process_piecewise_efficiency(source_db, target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt):
+def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs, unit_inputs, alt, cc_out, cc_in):
     """Handle piecewise efficiency (partial_load, piecewise_linear, piecewise_SOS2).
 
     Single input + single output: uses unit_flow__unit_flow with operating_points and flow ratios.
@@ -3520,14 +3329,7 @@ def _process_piecewise_efficiency(source_db, target_db, unit_name, efficiency, u
 
         # Output flows: coefficient = array of conversion_coefficient (or 1.0)
         for out_node in unit_outputs:
-            out_coeff = 1.0
-            for cc_item in source_db.get_parameter_value_items(
-                entity_class_name="unit__to_node",
-                parameter_definition_name="conversion_coefficient",
-            ):
-                if cc_item["entity_byname"] == (unit_name, out_node):
-                    out_coeff = cc_item["parsed_value"]
-                    break
+            out_coeff = cc_out.get((unit_name, out_node), 1.0)
             # Create array with same value for each operating point
             out_coeff_array = api.Array([out_coeff] * len(operating_points))
             uf_uc_byname = (unit_name, out_node, constraint_name)
@@ -3542,14 +3344,7 @@ def _process_piecewise_efficiency(source_db, target_db, unit_name, efficiency, u
 
         # Input flows: coefficient = array of -1 * conversion_coefficient * efficiency
         for in_node in unit_inputs:
-            in_coeff = 1.0
-            for cc_item in source_db.get_parameter_value_items(
-                entity_class_name="node__to_unit",
-                parameter_definition_name="conversion_coefficient",
-            ):
-                if cc_item["entity_byname"] == (in_node, unit_name):
-                    in_coeff = cc_item["parsed_value"]
-                    break
+            in_coeff = cc_in.get((in_node, unit_name), 1.0)
             coeff_values = [-1.0 * in_coeff * eff for eff in efficiencies]
             input_coeff_array = api.Array(coeff_values)
             uf_uc_byname = (in_node, unit_name, constraint_name)
@@ -3568,30 +3363,32 @@ def process_conversion_coefficients(source_db, target_db):
 
     If efficiency already set the flow ratio, multiply by the coefficient ratio."""
 
+    # Fetch conversion coefficient tables once
+    cc_out_items = source_db.get_parameter_value_items(
+        entity_class_name="unit__to_node", parameter_definition_name="conversion_coefficient",
+    )
+    cc_in_items = source_db.get_parameter_value_items(
+        entity_class_name="node__to_unit", parameter_definition_name="conversion_coefficient",
+    )
+    # Build entity lookups once
+    tgt_outputs_by_unit = {}
+    for f in target_db.get_entity_items(entity_class_name="unit__to_node"):
+        tgt_outputs_by_unit.setdefault(f["entity_byname"][0], []).append(f["entity_byname"][1])
+    tgt_inputs_by_unit = {}
+    for f in target_db.get_entity_items(entity_class_name="node__to_unit"):
+        tgt_inputs_by_unit.setdefault(f["entity_byname"][1], []).append(f["entity_byname"][0])
+    eff_constraints = set(
+        e["entity_byname"] for e in target_db.get_entity_items(entity_class_name="user_constraint")
+    )
+
     for unit_entity in target_db.get_entity_items(entity_class_name="unit"):
         unit_name = unit_entity["name"]
 
-        # Skip units that use efficiency user_constraint (multi-input/output)
-        eff_constraint = target_db.get_entity_item(
-            entity_class_name="user_constraint",
-            entity_byname=(unit_name + "_efficiency",),
-        )
-        if eff_constraint:
+        if (unit_name + "_efficiency",) in eff_constraints:
             continue
 
-        # Find output nodes (unit__to_node in both INES and SpineOpt)
-        unit_outputs = [
-            f["entity_byname"][1]
-            for f in target_db.get_entity_items(entity_class_name="unit__to_node")
-            if f["entity_byname"][0] == unit_name
-        ]
-
-        # Find input nodes (node__to_unit in new SpineOpt, dims: [node, unit])
-        unit_inputs = [
-            f["entity_byname"][0]
-            for f in target_db.get_entity_items(entity_class_name="node__to_unit")
-            if f["entity_byname"][1] == unit_name
-        ]
+        unit_outputs = tgt_outputs_by_unit.get(unit_name, [])
+        unit_inputs = tgt_inputs_by_unit.get(unit_name, [])
 
         if not unit_inputs or not unit_outputs:
             continue
@@ -3599,10 +3396,7 @@ def process_conversion_coefficients(source_db, target_db):
         # Collect conversion coefficients from source for output flows
         output_coeffs = {}
         for out_node in unit_outputs:
-            for cc_item in source_db.get_parameter_value_items(
-                entity_class_name="unit__to_node",
-                parameter_definition_name="conversion_coefficient",
-            ):
+            for cc_item in cc_out_items:
                 if cc_item["entity_byname"] == (unit_name, out_node):
                     alt = cc_item["alternative_name"]
                     if alt not in output_coeffs:
@@ -3612,10 +3406,7 @@ def process_conversion_coefficients(source_db, target_db):
         # Collect conversion coefficients from source for input flows
         input_coeffs = {}
         for in_node in unit_inputs:
-            for cc_item in source_db.get_parameter_value_items(
-                entity_class_name="node__to_unit",
-                parameter_definition_name="conversion_coefficient",
-            ):
+            for cc_item in cc_in_items:
                 if cc_item["entity_byname"] == (in_node, unit_name):
                     alt = cc_item["alternative_name"]
                     if alt not in input_coeffs:
@@ -4003,24 +3794,24 @@ def process_node_penalty(source_db, target_db, default_penalty):
             )
         except RuntimeError:
             pass
+    # Fetch balance_type and balance_penalty for all nodes at once
+    bt_by_node = {}
+    for pv in target_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="balance_type",
+    ):
+        bt_by_node[pv["entity_byname"][0]] = pv["parsed_value"]
+    bp_nodes = set(
+        pv["entity_byname"][0] for pv in target_db.get_parameter_value_items(
+            entity_class_name="node", parameter_definition_name="balance_penalty",
+        )
+    )
     for node_entity in target_db.get_entity_items(entity_class_name="node"):
         node_name = node_entity["entity_byname"][0]
         if node_name in skip_nodes or node_name not in nodes_with_type:
             continue
-        # Skip nodes with balance_type "none"
-        bt_items = target_db.get_parameter_value_items(
-            entity_class_name="node",
-            entity_byname=(node_name,),
-            parameter_definition_name="balance_type",
-        )
-        if bt_items and bt_items[0]["parsed_value"] == "none":
+        if bt_by_node.get(node_name) == "none":
             continue
-        existing = target_db.get_parameter_value_items(
-            entity_class_name="node",
-            entity_byname=(node_name,),
-            parameter_definition_name="balance_penalty",
-        )
-        if not existing:
+        if node_name not in bp_nodes:
             add_parameter_value(
                 target_db, "node", "balance_penalty",
                 default_alt, (node_name,), default_penalty,
@@ -4033,12 +3824,21 @@ def process_node_penalty(source_db, target_db, default_penalty):
         print("commit node penalty defaults error:", e)
 
 
-def process_commodity_price(source_db, target_db):
+def process_commodity_price(source_db, target_db, periods_info):
     """Map INES node.commodity_price to SpineOpt node__to_unit.vom_cost.
 
     Also handles commodity_price_forecasts as scenario-indexed Maps.
     """
-    periods_info = _get_periods_info(source_db)
+
+    # Fetch lookup tables once
+    ntu_by_node = {}
+    for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
+        ntu_by_node.setdefault(ntu["entity_byname"][0], []).append(ntu["entity_byname"][1])
+    commodity_prices = {}
+    for cp in source_db.get_parameter_value_items(
+        entity_class_name="node", parameter_definition_name="commodity_price",
+    ):
+        commodity_prices[cp["entity_byname"][0]] = cp
 
     # commodity_price (float or map)
     for pv in source_db.get_parameter_value_items(
@@ -4056,24 +3856,22 @@ def process_commodity_price(source_db, target_db):
             value = pv["parsed_value"]
         else:
             continue
-        for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
-            if ntu["entity_byname"][0] == node_name:
-                unit_name = ntu["entity_byname"][1]
-                try:
-                    add_parameter_value(
-                        target_db, "node__to_unit", "vom_cost",
-                        alt, (node_name, unit_name), value,
-                    )
-                except RuntimeError:
-                    db_val, val_type = api.to_database(value)
-                    target_db.update_parameter_value_item(
-                        entity_class_name="node__to_unit",
-                        entity_byname=(node_name, unit_name),
-                        parameter_definition_name="vom_cost",
-                        alternative_name=alt,
-                        value=db_val,
-                        type=val_type,
-                    )
+        for unit_name in ntu_by_node.get(node_name, []):
+            try:
+                add_parameter_value(
+                    target_db, "node__to_unit", "vom_cost",
+                    alt, (node_name, unit_name), value,
+                )
+            except RuntimeError:
+                db_val, val_type = api.to_database(value)
+                target_db.update_parameter_value_item(
+                    entity_class_name="node__to_unit",
+                    entity_byname=(node_name, unit_name),
+                    parameter_definition_name="vom_cost",
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
 
     # commodity_price_forecasts (scenario-indexed Map)
     for pv in source_db.get_parameter_value_items(
@@ -4088,39 +3886,32 @@ def process_commodity_price(source_db, target_db):
         # Look up realization value from commodity_price
         indexes = list(parsed.indexes)
         values = list(parsed.values)
-        base_items = source_db.get_parameter_value_items(
-            entity_class_name="node",
-            parameter_definition_name="commodity_price",
-            entity_byname=(node_name,),
-        )
-        if base_items:
-            base_val = base_items[0]["parsed_value"]
+        base_pv = commodity_prices.get(node_name)
+        if base_pv:
             indexes = ["realization"] + indexes
-            values = [base_val] + values
+            values = [base_pv["parsed_value"]] + values
 
         scenario_map = Map(
             indexes=indexes,
             values=values,
             index_name="stochastic_scenario",
         )
-        for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
-            if ntu["entity_byname"][0] == node_name:
-                unit_name = ntu["entity_byname"][1]
-                try:
-                    add_parameter_value(
-                        target_db, "node__to_unit", "vom_cost",
-                        alt, (node_name, unit_name), scenario_map,
-                    )
-                except RuntimeError:
-                    db_val, val_type = api.to_database(scenario_map)
-                    target_db.update_parameter_value_item(
-                        entity_class_name="node__to_unit",
-                        entity_byname=(node_name, unit_name),
-                        parameter_definition_name="vom_cost",
-                        alternative_name=alt,
-                        value=db_val,
-                        type=val_type,
-                    )
+        for unit_name in ntu_by_node.get(node_name, []):
+            try:
+                add_parameter_value(
+                    target_db, "node__to_unit", "vom_cost",
+                    alt, (node_name, unit_name), scenario_map,
+                )
+            except RuntimeError:
+                db_val, val_type = api.to_database(scenario_map)
+                target_db.update_parameter_value_item(
+                    entity_class_name="node__to_unit",
+                    entity_byname=(node_name, unit_name),
+                    parameter_definition_name="vom_cost",
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
 
     try:
         target_db.commit_session("Added commodity price")
@@ -4130,10 +3921,14 @@ def process_commodity_price(source_db, target_db):
         print("commit commodity price error:", e)
 
 
-def process_link_bidirectional(source_db, target_db):
+def process_link_bidirectional(source_db, target_db, periods_info):
     """Set capacity on all connection__from_node and connection__to_node entities,
     and efficiency on both connection__node__node entities for each link."""
-    periods_info = _get_periods_info(source_db)
+
+    # Build link → (node1, node2) lookup once
+    nln_by_link = {}
+    for nln in source_db.get_entity_items(entity_class_name="node__link__node"):
+        nln_by_link[nln["entity_byname"][1]] = (nln["entity_byname"][0], nln["entity_byname"][2])
 
     for pv in source_db.get_parameter_value_items(
         entity_class_name="node__link__node", parameter_definition_name="capacity"
@@ -4176,23 +3971,22 @@ def process_link_bidirectional(source_db, target_db):
             value = pv["parsed_value"]
         else:
             continue
-        for nln in source_db.get_entity_items(entity_class_name="node__link__node"):
-            if nln["entity_byname"][1] == link:
-                node1, _, node2 = nln["entity_byname"]
-                for target_class, target_byname in [
-                    ("connection__from_node", (link, node1)),
-                    ("connection__from_node", (link, node2)),
-                    ("connection__to_node", (link, node1)),
-                    ("connection__to_node", (link, node2)),
-                ]:
-                    try:
-                        add_parameter_value(
-                            target_db, target_class, "capacity_per_connection",
-                            alt, target_byname, value,
-                        )
-                    except RuntimeError:
-                        pass
-                break
+        nodes = nln_by_link.get(link)
+        if nodes:
+            node1, node2 = nodes
+            for target_class, target_byname in [
+                ("connection__from_node", (link, node1)),
+                ("connection__from_node", (link, node2)),
+                ("connection__to_node", (link, node1)),
+                ("connection__to_node", (link, node2)),
+            ]:
+                try:
+                    add_parameter_value(
+                        target_db, target_class, "capacity_per_connection",
+                        alt, target_byname, value,
+                    )
+                except RuntimeError:
+                    pass
 
     # Efficiency from node__link__node entity
     for pv in source_db.get_parameter_value_items(
@@ -4232,20 +4026,18 @@ def process_link_bidirectional(source_db, target_db):
             value = pv["parsed_value"]
         else:
             continue
-        # Find associated nodes from node__link__node entities
-        for nln in source_db.get_entity_items(entity_class_name="node__link__node"):
-            if nln["entity_byname"][1] == link:
-                node1, _, node2 = nln["entity_byname"]
-                for target_byname in [(link, node2, node1), (link, node1, node2)]:
-                    try:
-                        add_parameter_value(
-                            target_db, "connection__node__node",
-                            "fix_ratio_out_in_connection_flow",
-                            alt, target_byname, value,
-                        )
-                    except RuntimeError:
-                        pass
-                break
+        nodes = nln_by_link.get(link)
+        if nodes:
+            node1, node2 = nodes
+            for target_byname in [(link, node2, node1), (link, node1, node2)]:
+                try:
+                    add_parameter_value(
+                        target_db, "connection__node__node",
+                        "fix_ratio_out_in_connection_flow",
+                        alt, target_byname, value,
+                    )
+                except RuntimeError:
+                    pass
 
     try:
         target_db.commit_session("Added bidirectional link capacity and efficiency")
