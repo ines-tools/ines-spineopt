@@ -3446,6 +3446,16 @@ def process_conversion_coefficients(source_db, target_db):
                         parameter_definition_name="flow_ratio_equality_coefficient",
                         alternative_name=alt,
                     )
+                    #check also the other direction, if it has ratio set in piecewise eff. Should not limit both directions
+                    other_direction = (in_node, unit_name, unit_name, out_node)
+                    existing_other = target_db.get_parameter_value_item(
+                        entity_class_name="unit_flow__unit_flow",
+                        entity_byname=other_direction,
+                        parameter_definition_name="flow_ratio_equality_coefficient",
+                        alternative_name=alt,
+                    )
+                    if existing_other:
+                        continue
                     if existing_param and isinstance(ratio, (int, float)):
                         # Multiply existing value by coefficient ratio
                         existing_val = existing_param["parsed_value"]
