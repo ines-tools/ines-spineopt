@@ -4182,6 +4182,28 @@ def process_link_bidirectional(source_db, target_db, periods_info):
                     type=val_type,
                 )
 
+    #if efficiency is not defined for the connection add a 1
+    for link in nln_by_link:
+        nodes = nln_by_link.get(link)
+        if nodes:
+            node1, node2 = nodes
+            for target_byname in [(link, node2, node1), (link, node1, node2)]:
+                existing_efficiency = target_db.get_parameter_value_item(
+                    entity_class_name="connection__node__node",
+                    entity_byname=target_byname,
+                    parameter_definition_name="fix_ratio_out_in_connection_flow",
+                    alternative_name=alt,
+                )
+                if not existing_efficiency:
+                    try:
+                        add_parameter_value(
+                            target_db, "connection__node__node",
+                            "fix_ratio_out_in_connection_flow",
+                            alt, target_byname, 1.0,
+                        )
+                    except RuntimeError:
+                        pass
+    
     try:
         target_db.commit_session("Added bidirectional link capacity and efficiency")
     except NothingToCommit:
