@@ -543,6 +543,7 @@ def process_stochastic_structure(source_db, target_db):
 
 
 def process_input_capacity(source_db, target_db):
+    #legacy. Not used as the node__to_unit capacity should directly go to node__to_unit
     """Convert node__to_unit.capacity to unit__to_node.capacity_per_unit × max efficiency."""
     eff_by_unit = {}
     for pv in source_db.get_parameter_value_items(
@@ -1170,9 +1171,21 @@ def _get_periods_info(source_db):
     all_start_times = source_db.get_parameter_value_items(
         entity_class_name="period", parameter_definition_name="start_time",
     )
-    starttime = {}
-    for pv in all_start_times:
-        starttime[pv["entity_byname"][0]] = json.loads(pv["value"])["data"]
+    if all_start_times:
+        starttime = {}
+        for pv in all_start_times:
+            starttime[pv["entity_byname"][0]] = json.loads(pv["value"])["data"]
+    else:
+        starttime_sp = source_db.get_parameter_value_items(
+            entity_class_name="solve_pattern", parameter_definition_name="start_time",
+        )
+        periods_sp = source_db.get_parameter_value_items(
+            entity_class_name="solve_pattern", parameter_definition_name="periods",
+        )
+        if starttime_sp and periods_sp:
+            all_periods = api.from_database(periods_sp[0]["value"], periods_sp[0]["type"]).values
+            for i, val in enumerate(all_periods):
+                starttime[all_periods[i]] = api.from_database(starttime_sp[0]["value"], starttime_sp[0]["type"]).values[i]
     return {"periods": all_periods, "starttime": starttime}
 
 
@@ -2063,6 +2076,7 @@ def storage_state_fix_method(source_db, target_db, periods_info, resolution):
             if bool(pd.Timestamp(st).year % 4 == 0)
             else st
         )
+
     # Fetch lookup tables once
     all_capacities = source_db.get_parameter_value_items(parameter_definition_name="storage_capacity")
     cap_by_byname = {}
@@ -2082,87 +2096,96 @@ def storage_state_fix_method(source_db, target_db, periods_info, resolution):
     ):
         capacities_ = cap_by_byname.get(storage_method["entity_byname"], [])
         if capacities_:
-            if storage_method["parsed_value"] == "fix_start":
-                values_ = fix_by_byname.get(storage_method["entity_byname"], [])
-                if values_:
-                    existing_ = existing_by_byname.get(storage_method["entity_byname"])
-                    if not existing_:
-                        multiplier = 1.0
-                    else:
-                        if existing_["type"] == "float":
-                            multiplier = existing_["parsed_value"]
-                        elif existing_["type"] == "map":
-                            if len(existing_["parsed_value"].values) == 1:
-                                multiplier = existing_["parsed_value"].values[0]
-                            else:
-                                multiplier = dict(
-                                    zip(
-                                        existing_["parsed_value"].indexes,
-                                        existing_["parsed_value"].values,
-                                    )
+            values_ = fix_by_byname.get(storage_method["entity_byname"], [])
+            if values_:
+                existing_ = existing_by_byname.get(storage_method["entity_byname"])
+                if not existing_:
+                    multiplier = 1.0
+                else:
+                    if existing_["type"] == "float":
+                        multiplier = existing_["parsed_value"]
+                    elif existing_["type"] == "map":
+                        if len(existing_["parsed_value"].values) == 1:
+                            multiplier = existing_["parsed_value"].values[0]
+                        else:
+                            multiplier = dict(
+                                zip(
+                                    existing_["parsed_value"].indexes,
+                                    existing_["parsed_value"].values,
                                 )
+                            )
 
-                    for capacity_ in capacities_:
-                        for value_ in values_:
-                            if value_["type"] == "float":
-                                if capacity_["type"] == "float":
-                                    target_value_ = (
-                                        value_["parsed_value"]
-                                        * capacity_["parsed_value"]
-                                    )
-                                if (
-                                    value_["alternative_name"]
-                                    == capacity_["alternative_name"]
-                                ):
+                for capacity_ in capacities_:
+                    for value_ in values_:
+                        if value_["type"] == "float":
+                            if capacity_["type"] == "float":
+                                target_value_ = (
+                                    value_["parsed_value"]
+                                    * capacity_["parsed_value"]
+                                )
+                            if (
+                                value_["alternative_name"]
+                                == capacity_["alternative_name"]
+                            ):
+                                alternative_name = value_["alternative_name"]
+                            else:
+                                if value_["alternative_name"] == existing_["alternative_name"]:
+                                    alternative_name = capacity_["alternative_name"]
+                                elif capacity_["alternative_name"] == existing_["alternative_name"]:
                                     alternative_name = value_["alternative_name"]
                                 else:
-                                    if value_["alternative_name"] == existing_["alternative_name"]:
-                                        alternative_name = capacity_["alternative_name"]
-                                    elif capacity_["alternative_name"] == existing_["alternative_name"]:
-                                        alternative_name = value_["alternative_name"]
-                                    else:
-                                        add_alternative(
-                                            target_db,
-                                            f"{capacity_['alternative_name']}_{value_['alternative_name']}",
-                                        )
-                                        alternative_name = f"{capacity_['alternative_name']}_{value_['alternative_name']}"
-
-                                indexes_ = []
-                                vals_ = []
-                                for period, block_start in block_starts.items():
-                                    indexes_.append(
-                                        (
-                                            pd.Timestamp(block_start)
-                                            - pd.Timedelta(resolution)
-                                        ).isoformat()
+                                    add_alternative(
+                                        target_db,
+                                        f"{capacity_['alternative_name']}_{value_['alternative_name']}",
                                     )
-                                    indexes_.append(block_start)
-                                    vals_.append(
-                                        (
-                                            multiplier
-                                            if isinstance(multiplier, float)
-                                            else multiplier[period]
-                                        )
-                                        * target_value_
-                                    )
-                                    vals_.append(None)
-                                target_ts_ = {
-                                    "type": "time_series",
-                                    "data": dict(zip(indexes_, vals_)),
-                                }
-                                add_parameter_value(
-                                    target_db,
-                                    "node",
-                                    "storage_state_fix",
-                                    alternative_name,
-                                    value_["entity_byname"],
-                                    target_ts_,
+                                    alternative_name = f"{capacity_['alternative_name']}_{value_['alternative_name']}"
+                        if storage_method["parsed_value"] != "fix_start":
+                            indexes_ = []
+                            vals_ = []
+                            for period, block_start in block_starts.items():
+                                indexes_.append(
+                                    (
+                                        pd.Timestamp(block_start)
+                                        - pd.Timedelta(resolution)
+                                    ).isoformat()
                                 )
-                else:
-                    print(
-                        "WARNING: FIXED STATE DOES NOT EXIST ",
-                        storage_method["entity_byname"],
-                    )
+                                indexes_.append(block_start)
+                                vals_.append(
+                                    (
+                                        multiplier
+                                        if isinstance(multiplier, float)
+                                        else multiplier[period]
+                                    )
+                                    * target_value_
+                                )
+                                vals_.append(None)
+                            target_ts_ = {
+                                "type": "time_series",
+                                "data": dict(zip(indexes_, vals_)),
+                            }
+                            add_parameter_value(
+                                target_db,
+                                "node",
+                                "storage_state_fix",
+                                alternative_name,
+                                value_["entity_byname"],
+                                target_ts_,
+                            )
+                        else:
+                            val_out = (multiplier if isinstance(multiplier, float) else multiplier[period]) * target_value_
+                            add_parameter_value(
+                                target_db,
+                                "node",
+                                "storage_state_initial",
+                                alternative_name,
+                                value_["entity_byname"],
+                                val_out,
+                            )
+            else:
+                print(
+                    "WARNING: FIXED STATE DOES NOT EXIST ",
+                    storage_method["entity_byname"],
+                )
         else:
             print(
                 "WARNING: CAPACITY NOT DEFINED, THEN FIX STATE NOT ADDED",
