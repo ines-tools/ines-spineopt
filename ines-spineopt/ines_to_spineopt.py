@@ -3331,6 +3331,23 @@ def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs
                 "flow_ratio_equality_coefficient", alt, uf_byname, ratio_array,
             )
     else:
+        for in_node in unit_inputs:
+            #also add the values to the infow
+            try:
+                add_parameter_value(
+                    target_db, "node__to_unit", "operating_points",
+                    alt, (in_node, unit_name), api.Array(operating_points),
+                )
+            except RuntimeError:
+                pass
+            try:
+                add_parameter_value(
+                    target_db, "node__to_unit", "minimum_operating_point",
+                    alt, (in_node, unit_name), min_op,
+                )
+            except RuntimeError:
+                pass
+
         # Multiple inputs or outputs: use user_constraint with array coefficients
         constraint_name = unit_name + "_efficiency"
         try:
