@@ -1,3 +1,5 @@
+from os import link
+
 import spinedb_api as api
 from spinedb_api import DatabaseMapping, DateTime, Map, to_database
 from spinedb_api.parameter_value import convert_map_to_table, IndexedValue
@@ -210,10 +212,10 @@ def main():
                     entity_class_name="unit",
                     parameter_definition_name=duration_param,
                 ):
-                    hours = pv["parsed_value"]
-                    if isinstance(hours, (int, float)):
+                    minutes = pv["parsed_value"]
+                    if isinstance(minutes, (int, float)):
                         db_val, val_type = api.to_database(
-                            {"type": "duration", "data": f"{int(hours)}h"}
+                            {"type": "duration", "data": f"{int(minutes)}m"}
                         )
                         target_db.update_parameter_value_item(
                             entity_class_name="unit",
@@ -4048,6 +4050,97 @@ def process_link_bidirectional(source_db, target_db, periods_info):
                     )
                 except RuntimeError:
                     pass
+
+    #Operational costs from link entity (link__node__node comes from the settings.yaml)
+    # Efficiency from link entity
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="link", parameter_definition_name="operational_cost"
+    ):
+        link = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        else:
+            continue
+        nodes = nln_by_link.get(link)
+        if nodes:
+            node1, node2 = nodes
+            for target_byname in [(link, node1), (link, node2)]:
+                try:
+                    add_parameter_value(
+                        target_db, "connection__from_node",
+                        "connection_flow_cost",
+                        alt, target_byname, value,
+                    )
+                except RuntimeError:
+                    pass
+
+    #operational cost and efficiency forecasts
+    forecast_mappings = [
+        ("link", "operational_cost_forecasts", "connection__from_node", "connection_flow_cost"),
+        ("link", "efficiency_forecasts", "connection__node__node", "fix_ratio_out_in_connection_flow"),
+    ]
+
+    for src_class, src_param, tgt_class, tgt_param in forecast_mappings:
+        link = pv["entity_byname"][0]
+        target_names = (link, )
+
+        # Pre-fetch base param values for this class, if both stochastic forecasts and the simple value exist,
+        # they need to be combined appropriately.
+        base_by_byname = {}
+        for bp in target_db.get_parameter_value_items(
+            entity_class_name=tgt_class, parameter_definition_name=tgt_param,
+        ):
+            base_by_byname[bp["entity_byname"]] = bp
+
+        for pv in source_db.get_parameter_value_items(
+            entity_class_name=src_class, parameter_definition_name=src_param
+        ):
+            if pv["type"] != "map":
+                continue
+
+            alt = pv["alternative_name"]
+            parsed = pv["parsed_value"]
+
+            nodes = nln_by_link.get(link)
+
+            indexes = list(parsed.indexes)
+            values = [
+                v if isinstance(v, (int, float)) else v
+                for v in parsed.values
+            ]
+            base_item = base_by_byname.get(pv["entity_byname"])
+            if base_item:
+                base_val = base_item["parsed_value"]
+                indexes = ["realization"] + indexes
+                values = [base_val] + values
+
+            # Build scenario-indexed Map from the forecast data
+            scenario_map = Map(
+                indexes=indexes,
+                values=values,
+                index_name="stochastic_scenario",
+            )
+
+            try:
+                add_parameter_value(
+                    target_db, tgt_class, tgt_param,
+                    alt, target_names, scenario_map,
+                )
+            except RuntimeError:
+                db_val, val_type = api.to_database(scenario_map)
+                target_db.update_parameter_value_item(
+                    entity_class_name=tgt_class,
+                    entity_byname=target_names,
+                    parameter_definition_name=tgt_param,
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
 
     try:
         target_db.commit_session("Added bidirectional link capacity and efficiency")

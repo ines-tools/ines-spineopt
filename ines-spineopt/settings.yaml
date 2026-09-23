@@ -34,6 +34,7 @@ map_of_periods_or_historical_to_ts:
   node__link__node: 
     connection__from_node:
       operational_cost: [connection_flow_cost, 1.0,[[2],[1]]]
+      operational_cost: [connection_flow_cost, 1.0,[[2],[3]]]
   node:
     node:
       storage_state_lower_limit: [storage_state_min_fraction, 1.0,[[1]]]
