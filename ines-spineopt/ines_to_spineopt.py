@@ -1,5 +1,3 @@
-from os import link
-
 import spinedb_api as api
 from spinedb_api import DatabaseMapping, DateTime, Map, to_database
 from spinedb_api.parameter_value import convert_map_to_table, IndexedValue
@@ -202,6 +200,19 @@ def main():
             target_db = ines_transform.process_methods(
                 source_db, target_db, parameter_methods
             )
+            # Time series copied as-is from INES: set repeat to true
+            for pv in target_db.get_parameter_value_items():
+                if pv["type"] == "time_series" and not pv["parsed_value"].repeat:
+                    pv["parsed_value"].repeat = True
+                    db_val, val_type = api.to_database(pv["parsed_value"])
+                    target_db.update_parameter_value_item(
+                        entity_class_name=pv["entity_class_name"],
+                        entity_byname=pv["entity_byname"],
+                        parameter_definition_name=pv["parameter_definition_name"],
+                        alternative_name=pv["alternative_name"],
+                        value=db_val,
+                        type=val_type,
+                    )
             print("Processing capacity")
             # node__to_unit capacity → unit__to_node capacity_per_unit (× max efficiency)
             process_input_capacity(source_db, target_db)
@@ -212,10 +223,10 @@ def main():
                     entity_class_name="unit",
                     parameter_definition_name=duration_param,
                 ):
-                    minutes = pv["parsed_value"]
-                    if isinstance(minutes, (int, float)):
+                    hours = pv["parsed_value"]
+                    if isinstance(hours, (int, float)):
                         db_val, val_type = api.to_database(
-                            {"type": "duration", "data": f"{int(minutes)}m"}
+                            {"type": "duration", "data": f"{int(hours)}h"}
                         )
                         target_db.update_parameter_value_item(
                             entity_class_name="unit",
@@ -543,7 +554,6 @@ def process_stochastic_structure(source_db, target_db):
 
 
 def process_input_capacity(source_db, target_db):
-    #legacy. Not used as the node__to_unit capacity should directly go to node__to_unit
     """Convert node__to_unit.capacity to unit__to_node.capacity_per_unit × max efficiency."""
     eff_by_unit = {}
     for pv in source_db.get_parameter_value_items(
@@ -894,6 +904,7 @@ def process_availability(source_db, target_db, periods_info):
         if pv["type"] == "float":
             availability[(unit_name, alt)] = pv["parsed_value"]
         elif pv["type"] == "time_series":
+            pv["parsed_value"].repeat = True
             availability[(unit_name, alt)] = pv["parsed_value"]
         elif pv["type"] == "map":
             ts = _map_to_time_series(pv["parsed_value"], periods_info)
@@ -917,6 +928,7 @@ def process_availability(source_db, target_db, periods_info):
             if pv["type"] == "float":
                 profile[(unit_name, alt)] = pv["parsed_value"]
             elif pv["type"] == "time_series":
+                pv["parsed_value"].repeat = True
                 profile[(unit_name, alt)] = pv["parsed_value"]
             elif pv["type"] == "map":
                 ts = _map_to_time_series(pv["parsed_value"], periods_info)
@@ -987,6 +999,7 @@ def _multiply_values(a, b):
         return {
             "type": "time_series",
             "data": {k: v * b for k, v in a_data.items()},
+            "index": {"repeat": True},
         }
 
     if not a_is_ts and b_is_ts:
@@ -994,6 +1007,7 @@ def _multiply_values(a, b):
         return {
             "type": "time_series",
             "data": {k: v * a for k, v in b_data.items()},
+            "index": {"repeat": True},
         }
 
     # Both are time_series - multiply matching timestamps
@@ -1012,7 +1026,7 @@ def _multiply_values(a, b):
             last_a = a_data[k]
         if k in b_data:
             last_b = b_data[k]
-    return {"type": "time_series", "data": merged_data}
+    return {"type": "time_series", "data": merged_data, "index": {"repeat": True}}
 
 
 def process_invest_period(source_db, target_db, periods_info):
@@ -1171,21 +1185,9 @@ def _get_periods_info(source_db):
     all_start_times = source_db.get_parameter_value_items(
         entity_class_name="period", parameter_definition_name="start_time",
     )
-    if all_start_times:
-        starttime = {}
-        for pv in all_start_times:
-            starttime[pv["entity_byname"][0]] = json.loads(pv["value"])["data"]
-    else:
-        starttime_sp = source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="start_time",
-        )
-        periods_sp = source_db.get_parameter_value_items(
-            entity_class_name="solve_pattern", parameter_definition_name="periods",
-        )
-        if starttime_sp and periods_sp:
-            all_periods = api.from_database(periods_sp[0]["value"], periods_sp[0]["type"]).values
-            for i, val in enumerate(all_periods):
-                starttime[all_periods[i]] = api.from_database(starttime_sp[0]["value"], starttime_sp[0]["type"]).values[i]
+    starttime = {}
+    for pv in all_start_times:
+        starttime[pv["entity_byname"][0]] = json.loads(pv["value"])["data"]
     return {"periods": all_periods, "starttime": starttime}
 
 
@@ -1203,7 +1205,7 @@ def _map_to_time_series(parsed_value, periods_info):
     for period_, ts_index_ in starttime.items():
         values_.append(float(data.at[period_, "value"]) if period_ in data.index else 0.0)
         indexes_.append(ts_index_)
-    return {"type": "time_series", "data": dict(zip(indexes_, values_))}
+    return {"type": "time_series", "data": dict(zip(indexes_, values_)), "index": {"repeat": True}}
 
 
 def _get_emission_rates_for_type(source_db, target_db, config):
@@ -1334,7 +1336,7 @@ def _process_cumulative_emission_limits(target_db, emission_node, cumul_limits, 
                     add_parameter_value(
                         target_db, "node", "storage_state_max_fraction",
                         param_map["alternative_name"], (emission_node,),
-                        {"type": "time_series", "data": fraction_data},
+                        {"type": "time_series", "data": fraction_data, "index": {"repeat": True}},
                     )
                     add_parameter_value(
                         target_db, "node", "storage_state_max",
@@ -1387,7 +1389,7 @@ def _process_period_emission_limits(target_db, config, param_map, emission_rates
             for p_name, p_start in starttime.items():
                 ts_values.append(rate if p_name == period_name else 0.0)
                 ts_indexes.append(p_start)
-            return {"type": "time_series", "data": dict(zip(ts_indexes, ts_values))}
+            return {"type": "time_series", "data": dict(zip(ts_indexes, ts_values)), "index": {"repeat": True}}
 
         for unit_name, flows in emission_rates.items():
             try:
@@ -1641,6 +1643,7 @@ def map_of_periods_or_historical_to_ts(source_db, target_db, settings,
                             ts_to_export = {
                                 "type": "time_series",
                                 "data": dict(zip(indexes_, values_)),
+                                "index": {"repeat": True},
                             }
                             target_names = tuple(
                                 [
@@ -1691,6 +1694,7 @@ def map_of_periods_or_historical_to_ts(source_db, target_db, settings,
                                         "start": f"2018{element[4:]}",
                                         "resolution": resolution,
                                         "ignore_year": True,
+                                        "repeat": True,
                                     },
                                 }
                                 target_names = tuple(
@@ -2076,7 +2080,6 @@ def storage_state_fix_method(source_db, target_db, periods_info, resolution):
             if bool(pd.Timestamp(st).year % 4 == 0)
             else st
         )
-
     # Fetch lookup tables once
     all_capacities = source_db.get_parameter_value_items(parameter_definition_name="storage_capacity")
     cap_by_byname = {}
@@ -2096,96 +2099,88 @@ def storage_state_fix_method(source_db, target_db, periods_info, resolution):
     ):
         capacities_ = cap_by_byname.get(storage_method["entity_byname"], [])
         if capacities_:
-            values_ = fix_by_byname.get(storage_method["entity_byname"], [])
-            if values_:
-                existing_ = existing_by_byname.get(storage_method["entity_byname"])
-                if not existing_:
-                    multiplier = 1.0
-                else:
-                    if existing_["type"] == "float":
-                        multiplier = existing_["parsed_value"]
-                    elif existing_["type"] == "map":
-                        if len(existing_["parsed_value"].values) == 1:
-                            multiplier = existing_["parsed_value"].values[0]
-                        else:
-                            multiplier = dict(
-                                zip(
-                                    existing_["parsed_value"].indexes,
-                                    existing_["parsed_value"].values,
-                                )
-                            )
-
-                for capacity_ in capacities_:
-                    for value_ in values_:
-                        if value_["type"] == "float":
-                            if capacity_["type"] == "float":
-                                target_value_ = (
-                                    value_["parsed_value"]
-                                    * capacity_["parsed_value"]
-                                )
-                            if (
-                                value_["alternative_name"]
-                                == capacity_["alternative_name"]
-                            ):
-                                alternative_name = value_["alternative_name"]
+            if storage_method["parsed_value"] == "fix_start":
+                values_ = fix_by_byname.get(storage_method["entity_byname"], [])
+                if values_:
+                    existing_ = existing_by_byname.get(storage_method["entity_byname"])
+                    if not existing_:
+                        multiplier = 1.0
+                    else:
+                        if existing_["type"] == "float":
+                            multiplier = existing_["parsed_value"]
+                        elif existing_["type"] == "map":
+                            if len(existing_["parsed_value"].values) == 1:
+                                multiplier = existing_["parsed_value"].values[0]
                             else:
-                                if value_["alternative_name"] == existing_["alternative_name"]:
-                                    alternative_name = capacity_["alternative_name"]
-                                elif capacity_["alternative_name"] == existing_["alternative_name"]:
+                                multiplier = dict(
+                                    zip(
+                                        existing_["parsed_value"].indexes,
+                                        existing_["parsed_value"].values,
+                                    )
+                                )
+
+                    for capacity_ in capacities_:
+                        for value_ in values_:
+                            if value_["type"] == "float":
+                                if capacity_["type"] == "float":
+                                    target_value_ = (
+                                        value_["parsed_value"]
+                                        * capacity_["parsed_value"]
+                                    )
+                                if (
+                                    value_["alternative_name"]
+                                    == capacity_["alternative_name"]
+                                ):
                                     alternative_name = value_["alternative_name"]
                                 else:
-                                    add_alternative(
-                                        target_db,
-                                        f"{capacity_['alternative_name']}_{value_['alternative_name']}",
+                                    if value_["alternative_name"] == existing_["alternative_name"]:
+                                        alternative_name = capacity_["alternative_name"]
+                                    elif capacity_["alternative_name"] == existing_["alternative_name"]:
+                                        alternative_name = value_["alternative_name"]
+                                    else:
+                                        add_alternative(
+                                            target_db,
+                                            f"{capacity_['alternative_name']}_{value_['alternative_name']}",
+                                        )
+                                        alternative_name = f"{capacity_['alternative_name']}_{value_['alternative_name']}"
+
+                                indexes_ = []
+                                vals_ = []
+                                for period, block_start in block_starts.items():
+                                    indexes_.append(
+                                        (
+                                            pd.Timestamp(block_start)
+                                            - pd.Timedelta(resolution)
+                                        ).isoformat()
                                     )
-                                    alternative_name = f"{capacity_['alternative_name']}_{value_['alternative_name']}"
-                        if storage_method["parsed_value"] != "fix_start":
-                            indexes_ = []
-                            vals_ = []
-                            for period, block_start in block_starts.items():
-                                indexes_.append(
-                                    (
-                                        pd.Timestamp(block_start)
-                                        - pd.Timedelta(resolution)
-                                    ).isoformat()
-                                )
-                                indexes_.append(block_start)
-                                vals_.append(
-                                    (
-                                        multiplier
-                                        if isinstance(multiplier, float)
-                                        else multiplier[period]
+                                    indexes_.append(block_start)
+                                    vals_.append(
+                                        (
+                                            multiplier
+                                            if isinstance(multiplier, float)
+                                            else multiplier[period]
+                                        )
+                                        * target_value_
                                     )
-                                    * target_value_
+                                    vals_.append(None)
+                                target_ts_ = {
+                                    "type": "time_series",
+                                    "data": dict(zip(indexes_, vals_)),
+                                    "index": {"repeat": True},
+                                }
+                                add_parameter_value(
+                                    target_db,
+                                    "node",
+                                    "storage_state_fix",
+                                    alternative_name,
+                                    value_["entity_byname"],
+                                    target_ts_,
                                 )
-                                vals_.append(None)
-                            target_ts_ = {
-                                "type": "time_series",
-                                "data": dict(zip(indexes_, vals_)),
-                            }
-                            add_parameter_value(
-                                target_db,
-                                "node",
-                                "storage_state_fix",
-                                alternative_name,
-                                value_["entity_byname"],
-                                target_ts_,
-                            )
-                        else:
-                            val_out = (multiplier if isinstance(multiplier, float) else multiplier[period]) * target_value_
-                            add_parameter_value(
-                                target_db,
-                                "node",
-                                "storage_state_initial",
-                                alternative_name,
-                                value_["entity_byname"],
-                                val_out,
-                            )
-            else:
-                print(
-                    "WARNING: FIXED STATE DOES NOT EXIST ",
-                    storage_method["entity_byname"],
-                )
+                else:
+                    print(
+                        "WARNING: FIXED STATE DOES NOT EXIST ",
+                        storage_method["entity_byname"],
+                    )
         else:
             print(
                 "WARNING: CAPACITY NOT DEFINED, THEN FIX STATE NOT ADDED",
@@ -2306,6 +2301,7 @@ def limiting_investments_notallowed(source_db, target_db, periods_info):
                             value_ = {
                                 "type": "time_series",
                                 "data": dict(zip(indexes_, values_)),
+                                "index": {"repeat": True},
                             }
                         else:
                             value_ = values_[0]
@@ -2804,6 +2800,7 @@ def unit_flow_variants(source_db, target_db, settings,
                 ts_export = {
                     "type": "time_series",
                     "data": dict(zip(indexes_, values_)),
+                    "index": {"repeat": True},
                 }
                 add_parameter_value(
                     target_db,
@@ -2838,6 +2835,7 @@ def unit_flow_variants(source_db, target_db, settings,
                             "start": f"2018{element[4:]}",
                             "resolution": resolution,
                             "ignore_year": True,
+                            "repeat": True,
                         },
                     }
                     add_parameter_value(
@@ -2964,6 +2962,7 @@ def flow_profile_method(source_db, target_db, periods_info, resolution, duration
                                 "start": f"2018{element[4:]}",
                                 "resolution": resolution,
                                 "ignore_year": True,
+                                "repeat": True,
                             },
                         }
                         add_parameter_value(
@@ -2995,7 +2994,7 @@ def flow_profile_method(source_db, target_db, periods_info, resolution, duration
                     scaled_values = [-1.0 * scale_factor * v for v in ts_val.values]
                 else:
                     scaled_values = [-1.0 * v for v in ts_val.values]
-                result_ts = api.TimeSeriesVariableResolution(ts_val.indexes, scaled_values, ignore_year=False, repeat=False, index_name="time step")
+                result_ts = api.TimeSeriesVariableResolution(ts_val.indexes, scaled_values, ignore_year=False, repeat=True, index_name="time step")
                 add_parameter_value(
                     target_db,
                     "node",
@@ -3065,7 +3064,7 @@ def flow_profile_method(source_db, target_db, periods_info, resolution, duration
             # For nested Map/TimeSeries values, negate the values
             if hasattr(profile_val, 'indexes') and hasattr(profile_val, 'values'):
                 negated_values = [-1.0 * v for v in profile_val.values]
-                return type(profile_val)(profile_val.indexes, negated_values, profile_val.ignore_year, profile_val.repeat)
+                return type(profile_val)(profile_val.indexes, negated_values, profile_val.ignore_year, True)
             return profile_val
 
         # Build scenario-indexed Map
@@ -3331,23 +3330,6 @@ def _process_piecewise_efficiency(target_db, unit_name, efficiency, unit_outputs
                 "flow_ratio_equality_coefficient", alt, uf_byname, ratio_array,
             )
     else:
-        for in_node in unit_inputs:
-            #also add the values to the infow
-            try:
-                add_parameter_value(
-                    target_db, "node__to_unit", "operating_points",
-                    alt, (in_node, unit_name), api.Array(operating_points),
-                )
-            except RuntimeError:
-                pass
-            try:
-                add_parameter_value(
-                    target_db, "node__to_unit", "minimum_operating_point",
-                    alt, (in_node, unit_name), min_op,
-                )
-            except RuntimeError:
-                pass
-
         # Multiple inputs or outputs: use user_constraint with array coefficients
         constraint_name = unit_name + "_efficiency"
         try:
@@ -3488,16 +3470,6 @@ def process_conversion_coefficients(source_db, target_db):
                         parameter_definition_name="flow_ratio_equality_coefficient",
                         alternative_name=alt,
                     )
-                    #check also the other direction, if it has ratio set in piecewise eff. Should not limit both directions
-                    other_direction = (in_node, unit_name, unit_name, out_node)
-                    existing_other = target_db.get_parameter_value_item(
-                        entity_class_name="unit_flow__unit_flow",
-                        entity_byname=other_direction,
-                        parameter_definition_name="flow_ratio_equality_coefficient",
-                        alternative_name=alt,
-                    )
-                    if existing_other:
-                        continue
                     if existing_param and isinstance(ratio, (int, float)):
                         # Multiply existing value by coefficient ratio
                         existing_val = existing_param["parsed_value"]
@@ -3906,6 +3878,7 @@ def process_commodity_price(source_db, target_db, periods_info):
             value = pv["parsed_value"]
         elif pv["type"] == "time_series":
             value = pv["parsed_value"]
+            value.repeat = True
         else:
             continue
         for unit_name in ntu_by_node.get(node_name, []):
@@ -4091,119 +4064,6 @@ def process_link_bidirectional(source_db, target_db, periods_info):
                 except RuntimeError:
                     pass
 
-    #Operational costs from link entity (link__node__node comes from the settings.yaml)
-    # Efficiency from link entity
-    for pv in source_db.get_parameter_value_items(
-        entity_class_name="link", parameter_definition_name="operational_cost"
-    ):
-        link = pv["entity_byname"][0]
-        alt = pv["alternative_name"]
-        if pv["type"] == "map":
-            value = _map_to_time_series(pv["parsed_value"], periods_info)
-            if not value:
-                continue
-        elif pv["type"] == "float":
-            value = pv["parsed_value"]
-        else:
-            continue
-        nodes = nln_by_link.get(link)
-        if nodes:
-            node1, node2 = nodes
-            for target_byname in [(link, node1), (link, node2)]:
-                try:
-                    add_parameter_value(
-                        target_db, "connection__from_node",
-                        "connection_flow_cost",
-                        alt, target_byname, value,
-                    )
-                except RuntimeError:
-                    pass
-
-    #operational cost and efficiency forecasts
-    forecast_mappings = [
-        ("link", "operational_cost_forecasts", "connection__from_node", "connection_flow_cost"),
-        ("link", "efficiency_forecasts", "connection__node__node", "fix_ratio_out_in_connection_flow"),
-    ]
-
-    for src_class, src_param, tgt_class, tgt_param in forecast_mappings:
-        link = pv["entity_byname"][0]
-        target_names = (link, )
-
-        # Pre-fetch base param values for this class, if both stochastic forecasts and the simple value exist,
-        # they need to be combined appropriately.
-        base_by_byname = {}
-        for bp in target_db.get_parameter_value_items(
-            entity_class_name=tgt_class, parameter_definition_name=tgt_param,
-        ):
-            base_by_byname[bp["entity_byname"]] = bp
-
-        for pv in source_db.get_parameter_value_items(
-            entity_class_name=src_class, parameter_definition_name=src_param
-        ):
-            if pv["type"] != "map":
-                continue
-
-            alt = pv["alternative_name"]
-            parsed = pv["parsed_value"]
-
-            nodes = nln_by_link.get(link)
-
-            indexes = list(parsed.indexes)
-            values = [
-                v if isinstance(v, (int, float)) else v
-                for v in parsed.values
-            ]
-            base_item = base_by_byname.get(pv["entity_byname"])
-            if base_item:
-                base_val = base_item["parsed_value"]
-                indexes = ["realization"] + indexes
-                values = [base_val] + values
-
-            # Build scenario-indexed Map from the forecast data
-            scenario_map = Map(
-                indexes=indexes,
-                values=values,
-                index_name="stochastic_scenario",
-            )
-
-            try:
-                add_parameter_value(
-                    target_db, tgt_class, tgt_param,
-                    alt, target_names, scenario_map,
-                )
-            except RuntimeError:
-                db_val, val_type = api.to_database(scenario_map)
-                target_db.update_parameter_value_item(
-                    entity_class_name=tgt_class,
-                    entity_byname=target_names,
-                    parameter_definition_name=tgt_param,
-                    alternative_name=alt,
-                    value=db_val,
-                    type=val_type,
-                )
-
-    #if efficiency is not defined for the connection add a 1
-    for link in nln_by_link:
-        nodes = nln_by_link.get(link)
-        if nodes:
-            node1, node2 = nodes
-            for target_byname in [(link, node2, node1), (link, node1, node2)]:
-                existing_efficiency = target_db.get_parameter_value_item(
-                    entity_class_name="connection__node__node",
-                    entity_byname=target_byname,
-                    parameter_definition_name="fix_ratio_out_in_connection_flow",
-                    alternative_name=alt,
-                )
-                if not existing_efficiency:
-                    try:
-                        add_parameter_value(
-                            target_db, "connection__node__node",
-                            "fix_ratio_out_in_connection_flow",
-                            alt, target_byname, 1.0,
-                        )
-                    except RuntimeError:
-                        pass
-    
     try:
         target_db.commit_session("Added bidirectional link capacity and efficiency")
     except NothingToCommit:
