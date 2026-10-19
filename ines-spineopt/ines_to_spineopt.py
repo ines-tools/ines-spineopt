@@ -164,8 +164,43 @@ def parameter_features(
     return target_param, target_order, multiplier
 
 
+def _track_parameter_reads(source_db):
+    """Record (entity_class, parameter) of every parameter value read from source_db."""
+    read = set()
+    get_items = source_db.get_parameter_value_items
+    get_item = source_db.get_parameter_value_item
+
+    def tracked_items(*args, **kwargs):
+        items = get_items(*args, **kwargs)
+        read.update((i["entity_class_name"], i["parameter_definition_name"]) for i in items)
+        return items
+
+    def tracked_item(*args, **kwargs):
+        item = get_item(*args, **kwargs)
+        if item:
+            read.add((item["entity_class_name"], item["parameter_definition_name"]))
+        return item
+
+    source_db.get_parameter_value_items = tracked_items
+    source_db.get_parameter_value_item = tracked_item
+    return read
+
+
+def write_untransformed_parameters(source_db, read, file_name="untransformed_parameters.txt"):
+    # get_items is not tracked, so this read does not mark everything as used
+    untransformed = sorted({
+        f"{pv['entity_class_name']}: {pv['parameter_definition_name']}"
+        for pv in source_db.get_items("parameter_value")
+        if (pv["entity_class_name"], pv["parameter_definition_name"]) not in read
+    })
+    with open(file_name, "w") as file:
+        file.write("\n".join(untransformed) + "\n")
+    print(f"{len(untransformed)} untransformed parameters written to {file_name}")
+
+
 def main():
     with DatabaseMapping(url_db_in) as source_db:
+        parameters_read = _track_parameter_reads(source_db)
         with DatabaseMapping(url_db_out) as target_db:
             ## Empty the database
             target_db.purge_items("parameter_value")
@@ -362,6 +397,8 @@ def main():
             # bidirectional link capacity and efficiency
             print("Mapping bidirectional link capacity and efficiency...")
             process_link_bidirectional(source_db, target_db, periods_info)
+
+        write_untransformed_parameters(source_db, parameters_read)
 
 
 def process_forecasts(source_db, target_db):
@@ -3669,6 +3706,33 @@ def process_constraints(source_db, target_db):
                     float(val),
                 )
 
+    # Map constraint_demand_coefficient from node → node__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="node",
+        parameter_definition_name="constraint_demand_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            node_name = param["entity_byname"][0]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                try:
+                    add_entity(
+                        target_db,
+                        "node__user_constraint",
+                        (node_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "node__user_constraint",
+                    "coefficient_for_demand",
+                    param["alternative_name"],
+                    (node_name, constraint_name),
+                    float(val),
+                )
+
     # Map constraint_link_count_coefficient from link → connection__user_constraint
     for param in source_db.get_parameter_value_items(
         entity_class_name="link",
@@ -3848,8 +3912,31 @@ def process_node_penalty(source_db, target_db, default_penalty):
         print("commit node penalty defaults error:", e)
 
 
+def _negate(value):
+    """Return value multiplied by -1 (float, time series dict, TimeSeries or Map)."""
+    if isinstance(value, (int, float)):
+        return -value
+    if isinstance(value, dict):
+        data = value["data"]
+        if isinstance(data, dict):
+            return {**value, "data": {k: -v for k, v in data.items()}}
+        return {**value, "data": [-v for v in data]}
+    if isinstance(value, Map):
+        return Map(list(value.indexes), [_negate(v) for v in value.values], index_name=value.index_name)
+    if isinstance(value, api.TimeSeriesFixedResolution):
+        return api.TimeSeriesFixedResolution(
+            value.start, value.resolution, -value.values, value.ignore_year, True, index_name=value.index_name
+        )
+    if isinstance(value, api.TimeSeriesVariableResolution):
+        return api.TimeSeriesVariableResolution(
+            value.indexes, -value.values, value.ignore_year, True, index_name=value.index_name
+        )
+    return value
+
+
 def process_commodity_price(source_db, target_db, periods_info):
-    """Map INES node.commodity_price to SpineOpt node__to_unit.vom_cost.
+    """Map INES node.commodity_price to SpineOpt node__to_unit.vom_cost,
+    and the negated price to unit__to_node.vom_cost (selling to the commodity node).
 
     Also handles commodity_price_forecasts as scenario-indexed Maps.
     """
@@ -3858,6 +3945,28 @@ def process_commodity_price(source_db, target_db, periods_info):
     ntu_by_node = {}
     for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
         ntu_by_node.setdefault(ntu["entity_byname"][0], []).append(ntu["entity_byname"][1])
+    utn_by_node = {}
+    for utn in source_db.get_entity_items(entity_class_name="unit__to_node"):
+        utn_by_node.setdefault(utn["entity_byname"][1], []).append(utn["entity_byname"][0])
+
+    def _write_vom_cost(node_name, alt, value):
+        targets = [("node__to_unit", (node_name, u), value) for u in ntu_by_node.get(node_name, [])]
+        if node_name in utn_by_node:
+            negated = _negate(value)
+            targets += [("unit__to_node", (u, node_name), negated) for u in utn_by_node[node_name]]
+        for class_name, byname, val in targets:
+            try:
+                add_parameter_value(target_db, class_name, "vom_cost", alt, byname, val)
+            except RuntimeError:
+                db_val, val_type = api.to_database(val)
+                target_db.update_parameter_value_item(
+                    entity_class_name=class_name,
+                    entity_byname=byname,
+                    parameter_definition_name="vom_cost",
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
     commodity_prices = {}
     for cp in source_db.get_parameter_value_items(
         entity_class_name="node", parameter_definition_name="commodity_price",
@@ -3881,22 +3990,7 @@ def process_commodity_price(source_db, target_db, periods_info):
             value.repeat = True
         else:
             continue
-        for unit_name in ntu_by_node.get(node_name, []):
-            try:
-                add_parameter_value(
-                    target_db, "node__to_unit", "vom_cost",
-                    alt, (node_name, unit_name), value,
-                )
-            except RuntimeError:
-                db_val, val_type = api.to_database(value)
-                target_db.update_parameter_value_item(
-                    entity_class_name="node__to_unit",
-                    entity_byname=(node_name, unit_name),
-                    parameter_definition_name="vom_cost",
-                    alternative_name=alt,
-                    value=db_val,
-                    type=val_type,
-                )
+        _write_vom_cost(node_name, alt, value)
 
     # commodity_price_forecasts (scenario-indexed Map)
     for pv in source_db.get_parameter_value_items(
@@ -3921,22 +4015,7 @@ def process_commodity_price(source_db, target_db, periods_info):
             values=values,
             index_name="stochastic_scenario",
         )
-        for unit_name in ntu_by_node.get(node_name, []):
-            try:
-                add_parameter_value(
-                    target_db, "node__to_unit", "vom_cost",
-                    alt, (node_name, unit_name), scenario_map,
-                )
-            except RuntimeError:
-                db_val, val_type = api.to_database(scenario_map)
-                target_db.update_parameter_value_item(
-                    entity_class_name="node__to_unit",
-                    entity_byname=(node_name, unit_name),
-                    parameter_definition_name="vom_cost",
-                    alternative_name=alt,
-                    value=db_val,
-                    type=val_type,
-                )
+        _write_vom_cost(node_name, alt, scenario_map)
 
     try:
         target_db.commit_session("Added commodity price")
@@ -4060,6 +4139,34 @@ def process_link_bidirectional(source_db, target_db, periods_info):
                         target_db, "connection__node__node",
                         "fix_ratio_out_in_connection_flow",
                         alt, target_byname, value,
+                    )
+                except RuntimeError:
+                    pass
+
+    # Operational cost from link entity, applied to flows into both nodes
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="link", parameter_definition_name="operational_cost"
+    ):
+        link = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        elif pv["type"] == "time_series":
+            value = pv["parsed_value"]
+            value.repeat = True
+        else:
+            continue
+        nodes = nln_by_link.get(link)
+        if nodes:
+            for node in nodes:
+                try:
+                    add_parameter_value(
+                        target_db, "connection__to_node", "connection_flow_cost",
+                        alt, (link, node), value,
                     )
                 except RuntimeError:
                     pass
