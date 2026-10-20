@@ -164,8 +164,43 @@ def parameter_features(
     return target_param, target_order, multiplier
 
 
+def _track_parameter_reads(source_db):
+    """Record (entity_class, parameter) of every parameter value read from source_db."""
+    read = set()
+    get_items = source_db.get_parameter_value_items
+    get_item = source_db.get_parameter_value_item
+
+    def tracked_items(*args, **kwargs):
+        items = get_items(*args, **kwargs)
+        read.update((i["entity_class_name"], i["parameter_definition_name"]) for i in items)
+        return items
+
+    def tracked_item(*args, **kwargs):
+        item = get_item(*args, **kwargs)
+        if item:
+            read.add((item["entity_class_name"], item["parameter_definition_name"]))
+        return item
+
+    source_db.get_parameter_value_items = tracked_items
+    source_db.get_parameter_value_item = tracked_item
+    return read
+
+
+def write_untransformed_parameters(source_db, read, file_name="untransformed_parameters.txt"):
+    # get_items is not tracked, so this read does not mark everything as used
+    untransformed = sorted({
+        f"{pv['entity_class_name']}: {pv['parameter_definition_name']}"
+        for pv in source_db.get_items("parameter_value")
+        if (pv["entity_class_name"], pv["parameter_definition_name"]) not in read
+    })
+    with open(file_name, "w") as file:
+        file.write("\n".join(untransformed) + "\n")
+    print(f"{len(untransformed)} untransformed parameters written to {file_name}")
+
+
 def main():
     with DatabaseMapping(url_db_in) as source_db:
+        parameters_read = _track_parameter_reads(source_db)
         with DatabaseMapping(url_db_out) as target_db:
             ## Empty the database
             target_db.purge_items("parameter_value")
@@ -200,6 +235,19 @@ def main():
             target_db = ines_transform.process_methods(
                 source_db, target_db, parameter_methods
             )
+            # Time series copied as-is from INES: set repeat to true
+            for pv in target_db.get_parameter_value_items():
+                if pv["type"] == "time_series" and not pv["parsed_value"].repeat:
+                    pv["parsed_value"].repeat = True
+                    db_val, val_type = api.to_database(pv["parsed_value"])
+                    target_db.update_parameter_value_item(
+                        entity_class_name=pv["entity_class_name"],
+                        entity_byname=pv["entity_byname"],
+                        parameter_definition_name=pv["parameter_definition_name"],
+                        alternative_name=pv["alternative_name"],
+                        value=db_val,
+                        type=val_type,
+                    )
             print("Processing capacity")
             # node__to_unit capacity → unit__to_node capacity_per_unit (× max efficiency)
             process_input_capacity(source_db, target_db)
@@ -349,6 +397,8 @@ def main():
             # bidirectional link capacity and efficiency
             print("Mapping bidirectional link capacity and efficiency...")
             process_link_bidirectional(source_db, target_db, periods_info)
+
+        write_untransformed_parameters(source_db, parameters_read)
 
 
 def process_forecasts(source_db, target_db):
@@ -891,6 +941,7 @@ def process_availability(source_db, target_db, periods_info):
         if pv["type"] == "float":
             availability[(unit_name, alt)] = pv["parsed_value"]
         elif pv["type"] == "time_series":
+            pv["parsed_value"].repeat = True
             availability[(unit_name, alt)] = pv["parsed_value"]
         elif pv["type"] == "map":
             ts = _map_to_time_series(pv["parsed_value"], periods_info)
@@ -914,6 +965,7 @@ def process_availability(source_db, target_db, periods_info):
             if pv["type"] == "float":
                 profile[(unit_name, alt)] = pv["parsed_value"]
             elif pv["type"] == "time_series":
+                pv["parsed_value"].repeat = True
                 profile[(unit_name, alt)] = pv["parsed_value"]
             elif pv["type"] == "map":
                 ts = _map_to_time_series(pv["parsed_value"], periods_info)
@@ -984,6 +1036,7 @@ def _multiply_values(a, b):
         return {
             "type": "time_series",
             "data": {k: v * b for k, v in a_data.items()},
+            "index": {"repeat": True},
         }
 
     if not a_is_ts and b_is_ts:
@@ -991,6 +1044,7 @@ def _multiply_values(a, b):
         return {
             "type": "time_series",
             "data": {k: v * a for k, v in b_data.items()},
+            "index": {"repeat": True},
         }
 
     # Both are time_series - multiply matching timestamps
@@ -1009,7 +1063,7 @@ def _multiply_values(a, b):
             last_a = a_data[k]
         if k in b_data:
             last_b = b_data[k]
-    return {"type": "time_series", "data": merged_data}
+    return {"type": "time_series", "data": merged_data, "index": {"repeat": True}}
 
 
 def process_invest_period(source_db, target_db, periods_info):
@@ -1188,7 +1242,7 @@ def _map_to_time_series(parsed_value, periods_info):
     for period_, ts_index_ in starttime.items():
         values_.append(float(data.at[period_, "value"]) if period_ in data.index else 0.0)
         indexes_.append(ts_index_)
-    return {"type": "time_series", "data": dict(zip(indexes_, values_))}
+    return {"type": "time_series", "data": dict(zip(indexes_, values_)), "index": {"repeat": True}}
 
 
 def _get_emission_rates_for_type(source_db, target_db, config):
@@ -1319,7 +1373,7 @@ def _process_cumulative_emission_limits(target_db, emission_node, cumul_limits, 
                     add_parameter_value(
                         target_db, "node", "storage_state_max_fraction",
                         param_map["alternative_name"], (emission_node,),
-                        {"type": "time_series", "data": fraction_data},
+                        {"type": "time_series", "data": fraction_data, "index": {"repeat": True}},
                     )
                     add_parameter_value(
                         target_db, "node", "storage_state_max",
@@ -1372,7 +1426,7 @@ def _process_period_emission_limits(target_db, config, param_map, emission_rates
             for p_name, p_start in starttime.items():
                 ts_values.append(rate if p_name == period_name else 0.0)
                 ts_indexes.append(p_start)
-            return {"type": "time_series", "data": dict(zip(ts_indexes, ts_values))}
+            return {"type": "time_series", "data": dict(zip(ts_indexes, ts_values)), "index": {"repeat": True}}
 
         for unit_name, flows in emission_rates.items():
             try:
@@ -1626,6 +1680,7 @@ def map_of_periods_or_historical_to_ts(source_db, target_db, settings,
                             ts_to_export = {
                                 "type": "time_series",
                                 "data": dict(zip(indexes_, values_)),
+                                "index": {"repeat": True},
                             }
                             target_names = tuple(
                                 [
@@ -1676,6 +1731,7 @@ def map_of_periods_or_historical_to_ts(source_db, target_db, settings,
                                         "start": f"2018{element[4:]}",
                                         "resolution": resolution,
                                         "ignore_year": True,
+                                        "repeat": True,
                                     },
                                 }
                                 target_names = tuple(
@@ -2147,6 +2203,7 @@ def storage_state_fix_method(source_db, target_db, periods_info, resolution):
                                 target_ts_ = {
                                     "type": "time_series",
                                     "data": dict(zip(indexes_, vals_)),
+                                    "index": {"repeat": True},
                                 }
                                 add_parameter_value(
                                     target_db,
@@ -2281,6 +2338,7 @@ def limiting_investments_notallowed(source_db, target_db, periods_info):
                             value_ = {
                                 "type": "time_series",
                                 "data": dict(zip(indexes_, values_)),
+                                "index": {"repeat": True},
                             }
                         else:
                             value_ = values_[0]
@@ -2779,6 +2837,7 @@ def unit_flow_variants(source_db, target_db, settings,
                 ts_export = {
                     "type": "time_series",
                     "data": dict(zip(indexes_, values_)),
+                    "index": {"repeat": True},
                 }
                 add_parameter_value(
                     target_db,
@@ -2813,6 +2872,7 @@ def unit_flow_variants(source_db, target_db, settings,
                             "start": f"2018{element[4:]}",
                             "resolution": resolution,
                             "ignore_year": True,
+                            "repeat": True,
                         },
                     }
                     add_parameter_value(
@@ -2939,6 +2999,7 @@ def flow_profile_method(source_db, target_db, periods_info, resolution, duration
                                 "start": f"2018{element[4:]}",
                                 "resolution": resolution,
                                 "ignore_year": True,
+                                "repeat": True,
                             },
                         }
                         add_parameter_value(
@@ -2970,7 +3031,7 @@ def flow_profile_method(source_db, target_db, periods_info, resolution, duration
                     scaled_values = [-1.0 * scale_factor * v for v in ts_val.values]
                 else:
                     scaled_values = [-1.0 * v for v in ts_val.values]
-                result_ts = api.TimeSeriesVariableResolution(ts_val.indexes, scaled_values, ignore_year=False, repeat=False, index_name="time step")
+                result_ts = api.TimeSeriesVariableResolution(ts_val.indexes, scaled_values, ignore_year=False, repeat=True, index_name="time step")
                 add_parameter_value(
                     target_db,
                     "node",
@@ -3040,7 +3101,7 @@ def flow_profile_method(source_db, target_db, periods_info, resolution, duration
             # For nested Map/TimeSeries values, negate the values
             if hasattr(profile_val, 'indexes') and hasattr(profile_val, 'values'):
                 negated_values = [-1.0 * v for v in profile_val.values]
-                return type(profile_val)(profile_val.indexes, negated_values, profile_val.ignore_year, profile_val.repeat)
+                return type(profile_val)(profile_val.indexes, negated_values, profile_val.ignore_year, True)
             return profile_val
 
         # Build scenario-indexed Map
@@ -3645,6 +3706,33 @@ def process_constraints(source_db, target_db):
                     float(val),
                 )
 
+    # Map constraint_demand_coefficient from node → node__user_constraint
+    for param in source_db.get_parameter_value_items(
+        entity_class_name="node",
+        parameter_definition_name="constraint_demand_coefficient",
+    ):
+        if param["type"] == "map":
+            parsed = param["parsed_value"]
+            node_name = param["entity_byname"][0]
+            for idx, val in zip(parsed.indexes, parsed.values):
+                constraint_name = str(idx)
+                try:
+                    add_entity(
+                        target_db,
+                        "node__user_constraint",
+                        (node_name, constraint_name),
+                    )
+                except RuntimeError:
+                    pass
+                add_parameter_value(
+                    target_db,
+                    "node__user_constraint",
+                    "coefficient_for_demand",
+                    param["alternative_name"],
+                    (node_name, constraint_name),
+                    float(val),
+                )
+
     # Map constraint_link_count_coefficient from link → connection__user_constraint
     for param in source_db.get_parameter_value_items(
         entity_class_name="link",
@@ -3824,8 +3912,31 @@ def process_node_penalty(source_db, target_db, default_penalty):
         print("commit node penalty defaults error:", e)
 
 
+def _negate(value):
+    """Return value multiplied by -1 (float, time series dict, TimeSeries or Map)."""
+    if isinstance(value, (int, float)):
+        return -value
+    if isinstance(value, dict):
+        data = value["data"]
+        if isinstance(data, dict):
+            return {**value, "data": {k: -v for k, v in data.items()}}
+        return {**value, "data": [-v for v in data]}
+    if isinstance(value, Map):
+        return Map(list(value.indexes), [_negate(v) for v in value.values], index_name=value.index_name)
+    if isinstance(value, api.TimeSeriesFixedResolution):
+        return api.TimeSeriesFixedResolution(
+            value.start, value.resolution, -value.values, value.ignore_year, True, index_name=value.index_name
+        )
+    if isinstance(value, api.TimeSeriesVariableResolution):
+        return api.TimeSeriesVariableResolution(
+            value.indexes, -value.values, value.ignore_year, True, index_name=value.index_name
+        )
+    return value
+
+
 def process_commodity_price(source_db, target_db, periods_info):
-    """Map INES node.commodity_price to SpineOpt node__to_unit.vom_cost.
+    """Map INES node.commodity_price to SpineOpt node__to_unit.vom_cost,
+    and the negated price to unit__to_node.vom_cost (selling to the commodity node).
 
     Also handles commodity_price_forecasts as scenario-indexed Maps.
     """
@@ -3834,6 +3945,28 @@ def process_commodity_price(source_db, target_db, periods_info):
     ntu_by_node = {}
     for ntu in source_db.get_entity_items(entity_class_name="node__to_unit"):
         ntu_by_node.setdefault(ntu["entity_byname"][0], []).append(ntu["entity_byname"][1])
+    utn_by_node = {}
+    for utn in source_db.get_entity_items(entity_class_name="unit__to_node"):
+        utn_by_node.setdefault(utn["entity_byname"][1], []).append(utn["entity_byname"][0])
+
+    def _write_vom_cost(node_name, alt, value):
+        targets = [("node__to_unit", (node_name, u), value) for u in ntu_by_node.get(node_name, [])]
+        if node_name in utn_by_node:
+            negated = _negate(value)
+            targets += [("unit__to_node", (u, node_name), negated) for u in utn_by_node[node_name]]
+        for class_name, byname, val in targets:
+            try:
+                add_parameter_value(target_db, class_name, "vom_cost", alt, byname, val)
+            except RuntimeError:
+                db_val, val_type = api.to_database(val)
+                target_db.update_parameter_value_item(
+                    entity_class_name=class_name,
+                    entity_byname=byname,
+                    parameter_definition_name="vom_cost",
+                    alternative_name=alt,
+                    value=db_val,
+                    type=val_type,
+                )
     commodity_prices = {}
     for cp in source_db.get_parameter_value_items(
         entity_class_name="node", parameter_definition_name="commodity_price",
@@ -3854,24 +3987,10 @@ def process_commodity_price(source_db, target_db, periods_info):
             value = pv["parsed_value"]
         elif pv["type"] == "time_series":
             value = pv["parsed_value"]
+            value.repeat = True
         else:
             continue
-        for unit_name in ntu_by_node.get(node_name, []):
-            try:
-                add_parameter_value(
-                    target_db, "node__to_unit", "vom_cost",
-                    alt, (node_name, unit_name), value,
-                )
-            except RuntimeError:
-                db_val, val_type = api.to_database(value)
-                target_db.update_parameter_value_item(
-                    entity_class_name="node__to_unit",
-                    entity_byname=(node_name, unit_name),
-                    parameter_definition_name="vom_cost",
-                    alternative_name=alt,
-                    value=db_val,
-                    type=val_type,
-                )
+        _write_vom_cost(node_name, alt, value)
 
     # commodity_price_forecasts (scenario-indexed Map)
     for pv in source_db.get_parameter_value_items(
@@ -3896,22 +4015,7 @@ def process_commodity_price(source_db, target_db, periods_info):
             values=values,
             index_name="stochastic_scenario",
         )
-        for unit_name in ntu_by_node.get(node_name, []):
-            try:
-                add_parameter_value(
-                    target_db, "node__to_unit", "vom_cost",
-                    alt, (node_name, unit_name), scenario_map,
-                )
-            except RuntimeError:
-                db_val, val_type = api.to_database(scenario_map)
-                target_db.update_parameter_value_item(
-                    entity_class_name="node__to_unit",
-                    entity_byname=(node_name, unit_name),
-                    parameter_definition_name="vom_cost",
-                    alternative_name=alt,
-                    value=db_val,
-                    type=val_type,
-                )
+        _write_vom_cost(node_name, alt, scenario_map)
 
     try:
         target_db.commit_session("Added commodity price")
@@ -4035,6 +4139,34 @@ def process_link_bidirectional(source_db, target_db, periods_info):
                         target_db, "connection__node__node",
                         "fix_ratio_out_in_connection_flow",
                         alt, target_byname, value,
+                    )
+                except RuntimeError:
+                    pass
+
+    # Operational cost from link entity, applied to flows into both nodes
+    for pv in source_db.get_parameter_value_items(
+        entity_class_name="link", parameter_definition_name="operational_cost"
+    ):
+        link = pv["entity_byname"][0]
+        alt = pv["alternative_name"]
+        if pv["type"] == "map":
+            value = _map_to_time_series(pv["parsed_value"], periods_info)
+            if not value:
+                continue
+        elif pv["type"] == "float":
+            value = pv["parsed_value"]
+        elif pv["type"] == "time_series":
+            value = pv["parsed_value"]
+            value.repeat = True
+        else:
+            continue
+        nodes = nln_by_link.get(link)
+        if nodes:
+            for node in nodes:
+                try:
+                    add_parameter_value(
+                        target_db, "connection__to_node", "connection_flow_cost",
+                        alt, (link, node), value,
                     )
                 except RuntimeError:
                     pass
